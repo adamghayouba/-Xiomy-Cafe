@@ -1,0 +1,31 @@
+{
+  "name": "xiomy-cafe-pos",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.18.0 <21"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "seed:users": "node --env-file=.env.local scripts/seed-demo-users.mjs"
+  },
+  "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.104.0",
+    "lucide-react": "0.511.0",
+    "next": "^16.2.7",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.10",
+    "@types/react": "19.0.12",
+    "@types/react-dom": "19.0.4",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.5.3",
+    "tailwindcss": "3.4.17",
+    "typescript": "5.8.2"
+  }
+}
