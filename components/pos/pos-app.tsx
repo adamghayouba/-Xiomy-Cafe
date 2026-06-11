@@ -13,7 +13,7 @@ import {
   Wallet,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   beverageSubcategories,
   paymentMethods,
@@ -218,6 +218,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [clientForm, setClientForm] = useState<ClientFormState>(emptyClientForm);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [isProductEditorOpen, setIsProductEditorOpen] = useState(false);
   const [salesMessage, setSalesMessage] = useState<string | null>(null);
   const [productMessage, setProductMessage] = useState<string | null>(null);
   const [clientMessage, setClientMessage] = useState<string | null>(null);
@@ -271,6 +272,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [isResolvingCancellation, startCancellationResolveTransition] = useTransition();
   const [isLoadingCloseout, startCloseoutTransition] = useTransition();
   const [isSavingCloseout, startCloseoutSaveTransition] = useTransition();
+  const productNameInputRef = useRef<HTMLInputElement | null>(null);
 
   function can(permission: PosPermission) {
     return permissions[permission];
@@ -386,10 +388,42 @@ export function PosApp({ initialData }: PosAppProps) {
     () => currentOrder.reduce((total, item) => total + item.quantity, 0),
     [currentOrder]
   );
-  const sortedProducts = useMemo(
-    () => [...menuProducts].sort((left, right) => left.name.localeCompare(right.name)),
-    [menuProducts]
-  );
+  const adminCatalogProducts = useMemo(() => {
+    return menuProducts.filter((product) => {
+      if (product.category !== selectedCategory) {
+        return false;
+      }
+
+      if (
+        selectedCategory === "Bebidas" &&
+        product.subcategory !== selectedBeverageSubcategory
+      ) {
+        return false;
+      }
+
+      if (
+        selectedCategory === "Bebidas" &&
+        selectedBeverageSubcategory === "Alcohol"
+      ) {
+        if (getAlcoholType(product) !== selectedAlcoholType) {
+          return false;
+        }
+
+        if (selectedAlcoholPresentation !== "all") {
+          return getAlcoholPresentation(product) === selectedAlcoholPresentation;
+        }
+      }
+
+      return product.name.toLowerCase().includes(searchQuery.toLowerCase().trim());
+    });
+  }, [
+    menuProducts,
+    searchQuery,
+    selectedAlcoholPresentation,
+    selectedAlcoholType,
+    selectedBeverageSubcategory,
+    selectedCategory
+  ]);
   const stockTrackedProducts = useMemo(() => {
     return [...menuProducts]
       .filter((product) => product.trackStock && product.active)
@@ -411,7 +445,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const requiresPaymentMethod =
     checkoutTotals.saleStatus === "paid" && checkoutTotals.netTotal > 0;
   const isJefaView = initialData.profile.role === "jefa";
-  const roleHeroLabel = initialData.profile.role === "jefa" ? "Administración activa" : "Caja activa";
+  const roleHeroLabel = initialData.profile.role === "jefa" ? "Administración activa" : "CAJA";
   const paymentAmountNumber = Number(paymentAmount);
   const cashReceivedNumber = Number(cashReceived);
   const countedCashNumber = Number(countedCash);
@@ -512,6 +546,21 @@ export function PosApp({ initialData }: PosAppProps) {
     selectedBeverageSubcategory,
     selectedCategory
   ]);
+
+  useEffect(() => {
+    if (!isProductEditorOpen) {
+      return;
+    }
+
+    const timerId = window.setTimeout(() => {
+      productNameInputRef.current?.focus();
+      productNameInputRef.current?.select();
+    }, 40);
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [isProductEditorOpen]);
 
   function addProductToOrder(product: Product) {
     if (!can("sales.view")) {
@@ -657,7 +706,19 @@ export function PosApp({ initialData }: PosAppProps) {
   function resetProductForm() {
     setProductForm(emptyProductForm);
     setEditingProductId(null);
+    setIsProductEditorOpen(false);
     setProductMessage(null);
+  }
+
+  function startCreatingProduct() {
+    if (!can("products.create")) {
+      return;
+    }
+
+    setEditingProductId(null);
+    setProductMessage(null);
+    setProductForm(emptyProductForm);
+    setIsProductEditorOpen(true);
   }
 
   function startEditingProduct(product: Product) {
@@ -666,6 +727,7 @@ export function PosApp({ initialData }: PosAppProps) {
     }
 
     setEditingProductId(product.id);
+    setIsProductEditorOpen(true);
     setProductMessage(null);
     setProductForm({
       id: product.id,
@@ -854,6 +916,7 @@ export function PosApp({ initialData }: PosAppProps) {
       setProductMessage(editingProductId ? "Producto actualizado." : "Producto creado.");
       setEditingProductId(null);
       setProductForm(emptyProductForm);
+      setIsProductEditorOpen(false);
     });
   }
 
@@ -925,6 +988,7 @@ export function PosApp({ initialData }: PosAppProps) {
       if (editingProductId === product.id) {
         setEditingProductId(null);
         setProductForm(emptyProductForm);
+        setIsProductEditorOpen(false);
       }
     });
   }
@@ -1445,7 +1509,7 @@ export function PosApp({ initialData }: PosAppProps) {
               <p className="max-w-2xl text-sm leading-6 subtle sm:text-base">
                 {initialData.profile.role === "jefa"
                   ? "Monitorea ventas, descuentos familiares y clientes sin perder la base del menú para la siguiente etapa."
-                  : "Registra pedidos rápido, selecciona cliente si aplica y completa el cobro sin pasos innecesarios."}
+                  : "Registra pedidos rápido, selecciona cliente si aplica y completa el cobro."}
               </p>
             </div>
           </div>
@@ -3205,15 +3269,24 @@ export function PosApp({ initialData }: PosAppProps) {
                     Ajusta precios, disponibilidad y estructura del menú desde una vista administrativa.
                   </p>
                 </div>
-                {editingProductId ? (
+                {isProductEditorOpen ? (
                   <button
                     type="button"
                     onClick={resetProductForm}
                     className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
                   >
-                    Cancelar edición
+                    Cerrar editor
                   </button>
-                ) : null}
+                ) : (
+                  <button
+                    type="button"
+                    onClick={startCreatingProduct}
+                    className="inline-flex items-center gap-2 rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95"
+                  >
+                    <PlusCircle className="h-4 w-4" />
+                    Nuevo producto
+                  </button>
+                )}
               </div>
 
               {productMessage ? (
@@ -3359,11 +3432,141 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
                 </div>
               ) : (
-                <div className="mt-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)]">
+                <div className="mt-5 space-y-5">
+                  <div className="space-y-4 rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
+                    <div className="flex flex-wrap gap-2">
+                      {topLevelCategories.map((category) => {
+                        const isActive = category === selectedCategory;
+
+                        return (
+                          <button
+                            key={category}
+                            type="button"
+                            onClick={() => {
+                              setSelectedCategory(category);
+                              if (category === "Bebidas" && !selectedBeverageSubcategory) {
+                                setSelectedBeverageSubcategory("Calientes");
+                              }
+                            }}
+                            className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                              isActive
+                                ? "bg-ink text-white"
+                                : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+                            }`}
+                          >
+                            {category}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {selectedCategory === "Bebidas" ? (
+                      <div className="flex flex-wrap gap-2">
+                        {beverageSubcategories.map((subcategory) => {
+                          const isActive = subcategory === selectedBeverageSubcategory;
+
+                          return (
+                            <button
+                              key={subcategory}
+                              type="button"
+                              onClick={() => setSelectedBeverageSubcategory(subcategory)}
+                              className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                                isActive
+                                  ? "bg-[var(--accent)] text-ink"
+                                  : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+                              }`}
+                            >
+                              {subcategory}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+
+                    {selectedCategory === "Bebidas" &&
+                    selectedBeverageSubcategory === "Alcohol" ? (
+                      <div className="space-y-3">
+                        <div className="flex flex-wrap gap-2">
+                          {alcoholTypes.map((type) => {
+                            const isActive = type === selectedAlcoholType;
+
+                            return (
+                              <button
+                                key={type}
+                                type="button"
+                                onClick={() => setSelectedAlcoholType(type)}
+                                className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                                  isActive
+                                    ? "bg-ink text-white"
+                                    : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+                                }`}
+                              >
+                                {type}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {selectedAlcoholType !== "Cerveza" &&
+                        alcoholPresentationOptions.length > 1 ? (
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAlcoholPresentation("all")}
+                              className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                                selectedAlcoholPresentation === "all"
+                                  ? "bg-[var(--accent)] text-ink"
+                                  : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+                              }`}
+                            >
+                              Todas
+                            </button>
+                            {alcoholPresentationOptions.map((presentation) => {
+                              const isActive =
+                                presentation === selectedAlcoholPresentation;
+
+                              return (
+                                <button
+                                  key={presentation}
+                                  type="button"
+                                  onClick={() => setSelectedAlcoholPresentation(presentation)}
+                                  className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                                    isActive
+                                      ? "bg-[var(--accent)] text-ink"
+                                      : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+                                  }`}
+                                >
+                                  {presentation}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder="Buscar por nombre del producto"
+                        className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] py-3 pl-11 pr-4 text-sm outline-none transition focus:border-[var(--accent)]"
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-3">
-                    <p className="text-sm font-semibold">Productos registrados</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold">Productos registrados</p>
+                      <span className="text-xs subtle">
+                        {adminCatalogProducts.length} resultado
+                        {adminCatalogProducts.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
                     <div className="grid gap-3">
-                      {sortedProducts.map((product) => (
+                      {adminCatalogProducts.map((product) => (
                         <div
                           key={product.id}
                           className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)]"
@@ -3465,195 +3668,232 @@ export function PosApp({ initialData }: PosAppProps) {
                           </div>
                         </div>
                       ))}
+                      {!adminCatalogProducts.length ? (
+                        <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                          No hay productos en esta categoría con los filtros actuales.
+                        </div>
+                      ) : null}
                     </div>
                   </div>
+                </div>
+              )}
+            </section>
+          ) : null}
 
-                  <div className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
-                    <div className="flex items-center gap-2">
-                      {editingProductId ? (
-                        <PencilLine className="h-5 w-5 text-[var(--accent)]" />
-                      ) : (
-                        <PlusCircle className="h-5 w-5 text-[var(--accent)]" />
-                      )}
+          {can("products.admin") && isProductEditorOpen ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-black/35 sm:items-center sm:justify-center">
+              <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-2xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    {editingProductId ? (
+                      <PencilLine className="h-5 w-5 text-[var(--accent)]" />
+                    ) : (
+                      <PlusCircle className="h-5 w-5 text-[var(--accent)]" />
+                    )}
+                    <div>
                       <p className="text-sm font-semibold">
                         {editingProductId ? "Editar producto" : "Nuevo producto"}
                       </p>
+                      <p className="mt-1 text-sm subtle">
+                        Ajusta datos del producto en una ventana separada para editar más rápido.
+                      </p>
                     </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetProductForm}
+                    className="inline-flex items-center justify-center rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
 
-                    <div className="mt-4 grid gap-4">
+                <div className="mt-5 grid gap-4">
+                  {productMessage ? (
+                    <div className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]">
+                      {productMessage}
+                    </div>
+                  ) : null}
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Nombre</span>
+                    <input
+                      ref={productNameInputRef}
+                      type="text"
+                      value={productForm.name}
+                      onChange={(event) => updateProductForm("name", event.target.value)}
+                      placeholder="Ej. Aromática de frutos rojos"
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
                     <label className="grid gap-2">
-                      <span className="text-sm font-medium">Nombre</span>
+                      <span className="text-sm font-medium">Categoría</span>
+                      <select
+                        value={productForm.category}
+                        onChange={(event) =>
+                          updateProductForm("category", event.target.value as TopLevelCategory)
+                        }
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      >
+                        {topLevelCategories.map((category) => (
+                          <option key={category} value={category}>
+                            {category}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Subcategoría</span>
+                      <select
+                        value={productForm.category === "Bebidas" ? productForm.subcategory : ""}
+                        onChange={(event) =>
+                          updateProductForm(
+                            "subcategory",
+                            event.target.value as BeverageSubcategory
+                          )
+                        }
+                        disabled={productForm.category !== "Bebidas"}
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:bg-slate-100"
+                      >
+                        {productForm.category !== "Bebidas" ? (
+                          <option value="">No aplica</option>
+                        ) : null}
+                        {beverageSubcategories.map((subcategory) => (
+                          <option key={subcategory} value={subcategory}>
+                            {subcategory}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Precio (COP)</span>
                       <input
-                        type="text"
-                        value={productForm.name}
-                        onChange={(event) => updateProductForm("name", event.target.value)}
-                        placeholder="Ej. Aromática de frutos rojos"
+                        type="number"
+                        min="0"
+                        step="100"
+                        value={productForm.price}
+                        onChange={(event) => updateProductForm("price", event.target.value)}
+                        placeholder="0"
                         className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
                       />
                     </label>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Categoría</span>
-                        <select
-                          value={productForm.category}
-                          onChange={(event) =>
-                            updateProductForm(
-                              "category",
-                              event.target.value as TopLevelCategory
-                            )
-                          }
-                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        >
-                          {topLevelCategories.map((category) => (
-                            <option key={category} value={category}>
-                              {category}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Costo (opcional)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="100"
+                        value={productForm.cost}
+                        onChange={(event) => updateProductForm("cost", event.target.value)}
+                        placeholder="0"
+                        className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      />
+                    </label>
+                  </div>
 
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Subcategoría</span>
-                        <select
-                          value={productForm.category === "Bebidas" ? productForm.subcategory : ""}
-                          onChange={(event) =>
-                            updateProductForm(
-                              "subcategory",
-                              event.target.value as BeverageSubcategory
-                            )
-                          }
-                          disabled={productForm.category !== "Bebidas"}
-                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)] disabled:cursor-not-allowed disabled:bg-slate-100"
-                        >
-                          {productForm.category !== "Bebidas" ? (
-                            <option value="">No aplica</option>
-                          ) : null}
-                          {beverageSubcategories.map((subcategory) => (
-                            <option key={subcategory} value={subcategory}>
-                              {subcategory}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
+                  <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Icono o emoji</span>
+                      <input
+                        type="text"
+                        value={productForm.image}
+                        onChange={(event) => updateProductForm("image", event.target.value)}
+                        placeholder="☕"
+                        className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      />
+                    </label>
 
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Precio (COP)</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="100"
-                          value={productForm.price}
-                          onChange={(event) => updateProductForm("price", event.target.value)}
-                          placeholder="0"
-                          className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        />
-                      </label>
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Estado</span>
+                      <select
+                        value={productForm.active ? "active" : "inactive"}
+                        onChange={(event) =>
+                          updateProductForm("active", event.target.value === "active")
+                        }
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      >
+                        <option value="active">Activo</option>
+                        <option value="inactive">Inactivo</option>
+                      </select>
+                    </label>
+                  </div>
 
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Costo (opcional)</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="100"
-                          value={productForm.cost}
-                          onChange={(event) => updateProductForm("cost", event.target.value)}
-                          placeholder="0"
-                          className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        />
-                      </label>
-                    </div>
+                  <div className="grid gap-4 rounded-3xl bg-[var(--surface)] p-4 ring-1 ring-[var(--border)]">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-medium">Controlar stock</span>
+                      <select
+                        value={productForm.trackStock ? "yes" : "no"}
+                        onChange={(event) =>
+                          updateProductForm("trackStock", event.target.value === "yes")
+                        }
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      >
+                        <option value="no">No</option>
+                        <option value="yes">Sí</option>
+                      </select>
+                    </label>
 
-                    <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_180px]">
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Icono o emoji</span>
-                        <input
-                          type="text"
-                          value={productForm.image}
-                          onChange={(event) => updateProductForm("image", event.target.value)}
-                          placeholder="☕"
-                          className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        />
-                      </label>
+                    {productForm.trackStock ? (
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Cantidad actual</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={productForm.stockQuantity}
+                            onChange={(event) =>
+                              updateProductForm("stockQuantity", event.target.value)
+                            }
+                            placeholder="0"
+                            className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                          />
+                        </label>
 
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Estado</span>
-                        <select
-                          value={productForm.active ? "active" : "inactive"}
-                          onChange={(event) =>
-                            updateProductForm("active", event.target.value === "active")
-                          }
-                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        >
-                          <option value="active">Activo</option>
-                          <option value="inactive">Inactivo</option>
-                        </select>
-                      </label>
-                    </div>
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Stock mínimo</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={productForm.lowStockThreshold}
+                            onChange={(event) =>
+                              updateProductForm("lowStockThreshold", event.target.value)
+                            }
+                            placeholder="Opcional"
+                            className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                          />
+                        </label>
+                      </div>
+                    ) : (
+                      <p className="text-sm subtle">
+                        Este producto no descontará unidades automáticamente al venderse.
+                      </p>
+                    )}
+                  </div>
 
-                    <div className="grid gap-4 rounded-3xl bg-[var(--surface)] p-4 ring-1 ring-[var(--border)]">
-                      <label className="grid gap-2">
-                        <span className="text-sm font-medium">Controlar stock</span>
-                        <select
-                          value={productForm.trackStock ? "yes" : "no"}
-                          onChange={(event) =>
-                            updateProductForm("trackStock", event.target.value === "yes")
-                          }
-                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                        >
-                          <option value="no">No</option>
-                          <option value="yes">Sí</option>
-                        </select>
-                      </label>
-
-                      {productForm.trackStock ? (
-                        <div className="grid gap-4 sm:grid-cols-2">
-                          <label className="grid gap-2">
-                            <span className="text-sm font-medium">Cantidad actual</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              value={productForm.stockQuantity}
-                              onChange={(event) =>
-                                updateProductForm("stockQuantity", event.target.value)
-                              }
-                              placeholder="0"
-                              className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                            />
-                          </label>
-
-                          <label className="grid gap-2">
-                            <span className="text-sm font-medium">Stock mínimo</span>
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              value={productForm.lowStockThreshold}
-                              onChange={(event) =>
-                                updateProductForm("lowStockThreshold", event.target.value)
-                              }
-                              placeholder="Opcional"
-                              className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                            />
-                          </label>
-                        </div>
-                      ) : (
-                        <p className="text-sm subtle">
-                          Este producto no descontará unidades automáticamente al venderse.
-                        </p>
-                      )}
-                    </div>
-
+                  <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={resetProductForm}
+                      className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                    >
+                      Cancelar
+                    </button>
                     <button
                       type="button"
                       onClick={saveProduct}
                       disabled={
                         isSavingProduct || !productForm.name.trim() || !productForm.price.trim()
                       }
-                      className="mt-2 w-full rounded-2xl bg-ink px-4 py-4 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="rounded-2xl bg-ink px-4 py-4 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {isSavingProduct
                         ? "Guardando..."
@@ -3664,8 +3904,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
                 </div>
               </div>
-              )}
-            </section>
+            </div>
           ) : null}
         </section>
 

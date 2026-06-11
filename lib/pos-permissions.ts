@@ -78,7 +78,7 @@ export function formatRoleLabel(role: PosRole) {
 
 export function formatProfileIdentity(role: PosRole, fullName: string | null | undefined) {
   if (role === "jefa") {
-    const normalizedName = fullName?.trim();
+    const normalizedName = fullName?.trim() === "Angie" ? "Anyi" : fullName?.trim();
 
     return normalizedName?.length ? normalizedName : "Jefa";
   }
