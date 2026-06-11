@@ -17,6 +17,7 @@ export async function getPosBootstrapData(
   profile: PosProfile
 ): Promise<PosBootstrapData> {
   const permissions = getRolePermissions(profile.role);
+  const dayRange = getBogotaDayRange();
   const salesColumns =
     "id, created_at, payment_method, settlement_type, gross_total, discount_total, net_total, estimated_cost, gross_profit, items_count, sale_status, is_cancelled, cancellation_reason, cancellation_requested_at, cancellation_approved_at, cancellation_request_status, client:clients(full_name, pricing_type)";
 
@@ -48,12 +49,20 @@ export async function getPosBootstrapData(
       clientsQuery,
       supabase.rpc("sales_today_summary"),
       permissions["sales.history"]
-        ? supabase.from("sales").select(salesColumns).order("created_at", { ascending: false }).limit(10)
+        ? supabase
+            .from("sales")
+            .select(salesColumns)
+            .gte("created_at", dayRange.startIso)
+            .lt("created_at", dayRange.endIso)
+            .order("created_at", { ascending: false })
+            .limit(10)
         : permissions["sales.cancel.request"]
           ? supabase
               .from("sales")
               .select(salesColumns)
               .eq("cashier_user_id", profile.id)
+              .gte("created_at", dayRange.startIso)
+              .lt("created_at", dayRange.endIso)
               .order("created_at", { ascending: false })
               .limit(8)
           : Promise.resolve({ data: [], error: null })

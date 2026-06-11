@@ -1048,29 +1048,47 @@ as $$
       date_trunc('day', timezone('America/Bogota', now())) at time zone 'America/Bogota' as start_ts,
       (date_trunc('day', timezone('America/Bogota', now())) + interval '1 day') at time zone 'America/Bogota' as end_ts
   ),
+  last_closeout as (
+    select closeouts.created_at
+    from scope
+    join public.cash_closeouts as closeouts
+      on closeouts.cashier_user_id = scope.user_id
+     and closeouts.business_date = scope.business_date
+    order by closeouts.created_at desc
+    limit 1
+  ),
+  effective_scope as (
+    select
+      scope.user_id,
+      scope.business_date,
+      coalesce(last_closeout.created_at, scope.start_ts) as effective_start_ts,
+      scope.end_ts
+    from scope
+    left join last_closeout on true
+  ),
   sales_totals as (
     select
       coalesce(sum(case when sales.sale_status = 'paid' and sales.payment_method = 'Efectivo' and not sales.is_cancelled then sales.net_total else 0 end), 0) as cash_sales,
       coalesce(sum(case when sales.sale_status = 'paid' and sales.payment_method = 'Transferencia' and not sales.is_cancelled then sales.net_total else 0 end), 0) as transfer_sales,
       coalesce(sum(case when sales.sale_status = 'pending' and not sales.is_cancelled then sales.gross_total else 0 end), 0) as fiado_generated,
       coalesce(sum(case when sales.sale_status = 'discounted' and not sales.is_cancelled then sales.gross_total else 0 end), 0) as family_consumption,
-      coalesce(sum(case when sales.is_cancelled and sales.cancellation_approved_at >= scope.start_ts and sales.cancellation_approved_at < scope.end_ts then sales.gross_total else 0 end), 0) as cancelled_sales
-    from scope
-    left join public.sales on sales.cashier_user_id = scope.user_id
-      and sales.created_at >= scope.start_ts
-      and sales.created_at < scope.end_ts
+      coalesce(sum(case when sales.is_cancelled and sales.cancellation_approved_at >= effective_scope.effective_start_ts and sales.cancellation_approved_at < effective_scope.end_ts then sales.gross_total else 0 end), 0) as cancelled_sales
+    from effective_scope
+    left join public.sales on sales.cashier_user_id = effective_scope.user_id
+      and sales.created_at >= effective_scope.effective_start_ts
+      and sales.created_at < effective_scope.end_ts
   ),
   payment_totals as (
     select
       coalesce(sum(amount), 0) as repayments_received,
       coalesce(sum(case when payment_method = 'Efectivo' then amount else 0 end), 0) as repayments_cash
-    from scope
-    left join public.client_payments on client_payments.created_by_user_id = scope.user_id
-      and client_payments.created_at >= scope.start_ts
-      and client_payments.created_at < scope.end_ts
+    from effective_scope
+    left join public.client_payments on client_payments.created_by_user_id = effective_scope.user_id
+      and client_payments.created_at >= effective_scope.effective_start_ts
+      and client_payments.created_at < effective_scope.end_ts
   )
   select
-    scope.business_date,
+    effective_scope.business_date,
     coalesce(p_starting_cash, 0)::numeric(12, 2) as starting_cash,
     sales_totals.cash_sales,
     sales_totals.transfer_sales,
@@ -1079,7 +1097,7 @@ as $$
     payment_totals.repayments_received,
     sales_totals.cancelled_sales,
     (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash)::numeric(12, 2) as expected_cash
-  from scope, sales_totals, payment_totals;
+  from effective_scope, sales_totals, payment_totals;
 $$;
 
 grant execute on function public.cash_closeout_snapshot(numeric) to authenticated;

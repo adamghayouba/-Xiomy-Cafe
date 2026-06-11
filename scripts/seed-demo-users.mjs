@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import managedUsers from "../config/managed-users.json" with { type: "json" };
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
@@ -7,13 +8,6 @@ if (!url || !serviceRoleKey) {
   throw new Error("Faltan NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY.");
 }
 
-const demoUsers = [
-  { email: "jefa1@xiomycafe.com", password: "abc123", full_name: "Xiomy", role: "jefa" },
-  { email: "jefa2@xiomycafe.com", password: "abc123", full_name: "Angie", role: "jefa" },
-  { email: "cajera1@xiomycafe.com", password: "abc123", full_name: "Cajera", role: "cajero" },
-  { email: "cajera2@xiomycafe.com", password: "abc123", full_name: "Cajera", role: "cajero" }
-];
-
 const supabase = createClient(url, serviceRoleKey, {
   auth: {
     autoRefreshToken: false,
@@ -21,13 +15,13 @@ const supabase = createClient(url, serviceRoleKey, {
   }
 });
 
-for (const user of demoUsers) {
+for (const user of managedUsers) {
   const { data: created, error: createError } = await supabase.auth.admin.createUser({
     email: user.email,
     password: user.password,
     email_confirm: true,
     app_metadata: { role: user.role },
-    user_metadata: { full_name: user.full_name }
+    user_metadata: { full_name: user.fullName }
   });
 
   let authUser = created.user;
@@ -49,7 +43,7 @@ for (const user of demoUsers) {
   const { error: updateError } = await supabase.auth.admin.updateUserById(authUser.id, {
     password: user.password,
     app_metadata: { role: user.role },
-    user_metadata: { full_name: user.full_name },
+    user_metadata: { full_name: user.fullName },
     email_confirm: true
   });
 
@@ -63,7 +57,7 @@ for (const user of demoUsers) {
       {
         id: authUser.id,
         email: user.email,
-        full_name: user.full_name,
+        full_name: user.fullName,
         role: user.role
       },
       { onConflict: "id" }

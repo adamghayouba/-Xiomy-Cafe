@@ -140,6 +140,54 @@ function getAlcoholPresentation(product: Product): AlcoholPresentation | null {
   return getAlcoholType(product) === "Cerveza" ? null : "Otros";
 }
 
+function renderProductBadge(product: Product) {
+  const name = product.name.toLowerCase();
+
+  if (name.includes("aguardiente verde")) {
+    return (
+      <span
+        className="block h-7 w-7 rounded-xl ring-1 ring-emerald-300"
+        style={{ backgroundColor: "#22c55e" }}
+      />
+    );
+  }
+
+  if (name.includes("aguardiente rojo") || name.includes("aguardiente roja")) {
+    return (
+      <span
+        className="block h-7 w-7 rounded-xl ring-1 ring-rose-300"
+        style={{ backgroundColor: "#ef4444" }}
+      />
+    );
+  }
+
+  if (name.includes("aguardiente azul")) {
+    return (
+      <span
+        className="block h-7 w-7 rounded-xl ring-1 ring-sky-300"
+        style={{ backgroundColor: "#3b82f6" }}
+      />
+    );
+  }
+
+  if (name.includes("shot")) {
+    return "🥃";
+  }
+
+  if (
+    name.includes("botella") ||
+    name.includes("garrafa") ||
+    name.includes("litro") ||
+    name.includes("375ml") ||
+    name.includes("500ml") ||
+    name.includes("700ml")
+  ) {
+    return "🍾";
+  }
+
+  return product.image || "🍽️";
+}
+
 export function PosApp({ initialData }: PosAppProps) {
   const permissions = useMemo(
     () => getRolePermissions(initialData.profile.role),
@@ -161,6 +209,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [selectedClientId, setSelectedClientId] = useState<string>("");
   const [selectedPaymentMethod, setSelectedPaymentMethod] =
     useState<PaymentMethod | null>(null);
+  const [cashReceived, setCashReceived] = useState("");
   const [dailySummary, setDailySummary] = useState<DailySummary>(
     initialData.dailySummary ?? emptyDailySummary()
   );
@@ -203,11 +252,11 @@ export function PosApp({ initialData }: PosAppProps) {
   const [cancellationMessage, setCancellationMessage] = useState<string | null>(null);
   const [isCloseoutOpen, setIsCloseoutOpen] = useState(false);
   const [closeoutMessage, setCloseoutMessage] = useState<string | null>(null);
-  const [startingCash, setStartingCash] = useState("0");
   const [countedCash, setCountedCash] = useState("");
   const [closeoutNotes, setCloseoutNotes] = useState("");
   const [closeoutSnapshot, setCloseoutSnapshot] = useState<CashCloseoutSnapshot | null>(null);
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [isSavingSale, startSaleTransition] = useTransition();
   const [isSavingProduct, startProductTransition] = useTransition();
   const [isSavingClient, startClientTransition] = useTransition();
@@ -364,6 +413,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const isJefaView = initialData.profile.role === "jefa";
   const roleHeroLabel = initialData.profile.role === "jefa" ? "Administración activa" : "Caja activa";
   const paymentAmountNumber = Number(paymentAmount);
+  const cashReceivedNumber = Number(cashReceived);
   const countedCashNumber = Number(countedCash);
   const outOfStockCount = useMemo(
     () => stockTrackedProducts.filter((product) => isProductOutOfStock(product)).length,
@@ -386,10 +436,55 @@ export function PosApp({ initialData }: PosAppProps) {
   const pendingCancellationCount = pendingCancellationRequests.filter(
     (request) => request.status === "pending"
   ).length;
+  const latestCloseoutAt = closeoutHistory[0]?.createdAt ?? null;
+  const todayKey = getTodayKey(new Date(nowTick));
   const closeoutDifference =
     closeoutSnapshot && Number.isFinite(countedCashNumber)
       ? countedCashNumber - closeoutSnapshot.expectedCash
       : null;
+  const isCashCheckout = requiresPaymentMethod && selectedPaymentMethod === "Efectivo";
+  const cashChangeDue =
+    isCashCheckout && Number.isFinite(cashReceivedNumber)
+      ? cashReceivedNumber - checkoutTotals.netTotal
+      : null;
+  const visibleRecentSales = useMemo(() => {
+    if (isJefaView) {
+      return recentSales;
+    }
+
+    return recentSales.filter((sale) => {
+      const createdAt = new Date(sale.createdAt).getTime();
+      const lastCloseoutTime = latestCloseoutAt ? new Date(latestCloseoutAt).getTime() : null;
+      const saleDayKey = getTodayKey(new Date(sale.createdAt));
+
+      return (
+        Number.isFinite(createdAt) &&
+        saleDayKey === todayKey &&
+        nowTick - createdAt <= 30 * 60 * 1000 &&
+        (!Number.isFinite(lastCloseoutTime ?? NaN) || createdAt > (lastCloseoutTime ?? 0))
+      );
+    });
+  }, [isJefaView, latestCloseoutAt, nowTick, recentSales, todayKey]);
+  const latestRecentSaleId = visibleRecentSales[0]?.id ?? null;
+  const shortCloseoutAmount =
+    closeoutSnapshot && Number.isFinite(countedCashNumber) && countedCashNumber < closeoutSnapshot.expectedCash
+      ? closeoutSnapshot.expectedCash - countedCashNumber
+      : 0;
+  const shortCloseoutAlerts = closeoutHistory.filter((closeout) => closeout.difference < 0);
+
+  useEffect(() => {
+    if (isJefaView) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setNowTick(Date.now());
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isJefaView]);
 
   useEffect(() => {
     if (
@@ -502,6 +597,7 @@ export function PosApp({ initialData }: PosAppProps) {
     setCurrentOrder([]);
     setSelectedClientId("");
     setSelectedPaymentMethod(null);
+    setCashReceived("");
     setSalesMessage(null);
   }
 
@@ -513,6 +609,7 @@ export function PosApp({ initialData }: PosAppProps) {
 
     if (!client || client.pricingType !== "normal") {
       setSelectedPaymentMethod(null);
+      setCashReceived("");
     }
   }
 
@@ -679,6 +776,7 @@ export function PosApp({ initialData }: PosAppProps) {
       setCurrentOrder([]);
       setSelectedClientId("");
       setSelectedPaymentMethod(null);
+      setCashReceived("");
       setSalesMessage("Venta registrada correctamente.");
 
       if ((can("sales.history") || can("sales.cancel.request")) && result.sale) {
@@ -1041,13 +1139,18 @@ export function PosApp({ initialData }: PosAppProps) {
       return false;
     }
 
+    if (sale.id !== latestRecentSaleId) {
+      return false;
+    }
+
     if (sale.isCancelled || sale.cancellationRequestStatus === "pending") {
       return false;
     }
 
     const createdAt = new Date(sale.createdAt).getTime();
+    const sameBusinessDay = getTodayKey(new Date(sale.createdAt)) === getTodayKey(new Date(nowTick));
 
-    return Number.isFinite(createdAt) && Date.now() - createdAt <= 30 * 60 * 1000;
+    return sameBusinessDay && Number.isFinite(createdAt) && nowTick - createdAt <= 30 * 60 * 1000;
   }
 
   function updateRecentSale(nextSale: SaleHistoryEntry) {
@@ -1163,17 +1266,14 @@ export function PosApp({ initialData }: PosAppProps) {
     });
   }
 
-  function loadCloseoutData(startingCashOverride?: string) {
+  function loadCloseoutData() {
     if (!can("cash.closeout")) {
       return;
     }
 
     startCloseoutTransition(async () => {
-      const baseCash = Number(
-        typeof startingCashOverride === "string" ? startingCashOverride : startingCash
-      );
       const query = new URLSearchParams({
-        startingCash: Number.isFinite(baseCash) ? String(baseCash) : "0"
+        startingCash: "0"
       });
 
       const response = await fetch(`/api/closeouts?${query.toString()}`);
@@ -1199,6 +1299,16 @@ export function PosApp({ initialData }: PosAppProps) {
       return;
     }
 
+    if (shortCloseoutAmount > 0) {
+      const shouldContinue = window.confirm(
+        `La caja se está cerrando con un faltante de ${formatCop(shortCloseoutAmount)}. ¿Deseas continuar?`
+      );
+
+      if (!shouldContinue) {
+        return;
+      }
+    }
+
     startCloseoutSaveTransition(async () => {
       const response = await fetch("/api/closeouts", {
         method: "POST",
@@ -1206,7 +1316,7 @@ export function PosApp({ initialData }: PosAppProps) {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          startingCash: Number(startingCash) || 0,
+          startingCash: 0,
           countedCash: countedCashNumber,
           notes: closeoutNotes
         })
@@ -1218,12 +1328,18 @@ export function PosApp({ initialData }: PosAppProps) {
         return;
       }
 
-      setCloseoutMessage("Cierre de caja guardado correctamente.");
+      setCloseoutMessage("Exito");
       setCloseoutSnapshot(result.snapshot as CashCloseoutSnapshot);
       setCloseoutHistory((currentHistory) => [
         result.closeout as CashCloseoutRecord,
         ...currentHistory
       ]);
+      if (!isJefaView) {
+        setRecentSales([]);
+      }
+      setIsCloseoutOpen(false);
+      setCountedCash("");
+      setCloseoutNotes("");
     });
   }
 
@@ -1266,7 +1382,7 @@ export function PosApp({ initialData }: PosAppProps) {
       return;
     }
 
-    loadCloseoutData("0");
+    loadCloseoutData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialData.profile.role]);
 
@@ -1475,6 +1591,48 @@ export function PosApp({ initialData }: PosAppProps) {
         </section>
       ) : null}
 
+      {isJefaView && shortCloseoutAlerts.length ? (
+        <section className="panel p-5 sm:p-6 ring-1 ring-rose-200">
+          <div className="rounded-3xl bg-rose-50 p-5 ring-1 ring-rose-200">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <p className="text-lg font-semibold text-rose-700">Alerta de caja</p>
+                <p className="mt-1 text-sm text-rose-700">
+                  La caja fue cerrada con un faltante de{" "}
+                  {formatCop(Math.abs(shortCloseoutAlerts[0].difference))}.
+                </p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
+                {shortCloseoutAlerts.length} cierre{shortCloseoutAlerts.length === 1 ? "" : "s"} con faltante
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {shortCloseoutAlerts.slice(0, 3).map((closeout) => (
+                <div
+                  key={closeout.id}
+                  className="rounded-2xl bg-white px-4 py-3 text-sm ring-1 ring-rose-100"
+                >
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="font-semibold text-rose-700">
+                        {closeout.cashierLabel} · Faltante {formatCop(Math.abs(closeout.difference))}
+                      </p>
+                      <p className="mt-1 subtle">
+                        Esperado: {formatCop(closeout.expectedCash)} · Contado: {formatCop(closeout.countedCash)}
+                      </p>
+                    </div>
+                    <span className="text-xs subtle">
+                      {closeout.businessDate.split("-").reverse().join("/")} · {formatSaleTime(closeout.createdAt)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {isJefaView ? (
         <section className="panel p-4 sm:p-5">
           <div className="flex flex-wrap gap-3">
@@ -1677,7 +1835,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex items-start gap-3">
                         <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-xl">
-                          {product.image || "🍽️"}
+                          {renderProductBadge(product)}
                         </span>
                         <div>
                           <p className="text-lg font-semibold leading-6">{product.name}</p>
@@ -2526,21 +2684,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   </button>
                 </div>
 
-                <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                  <label className="grid gap-2">
-                    <span className="text-sm font-medium">Fondo inicial</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={startingCash}
-                      onChange={(event) => {
-                        setStartingCash(event.target.value);
-                        loadCloseoutData(event.target.value);
-                      }}
-                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                    />
-                  </label>
+                <div className="mt-5 grid gap-4 sm:grid-cols-1">
                   <label className="grid gap-2">
                     <span className="text-sm font-medium">Efectivo contado</span>
                     <input
@@ -2570,7 +2714,6 @@ export function PosApp({ initialData }: PosAppProps) {
                     </div>
 
                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                    <MetricTile label="Fondo inicial" value={formatCop(closeoutSnapshot.startingCash)} />
                     <MetricTile label="Ventas en efectivo" value={formatCop(closeoutSnapshot.cashSales)} />
                     <MetricTile label="Ventas por transferencia" value={formatCop(closeoutSnapshot.transferSales)} />
                     <MetricTile label="Fiados generados" value={formatCop(closeoutSnapshot.fiadoGenerated)} />
@@ -2586,10 +2729,46 @@ export function PosApp({ initialData }: PosAppProps) {
                 ) : null}
 
                 {closeoutSnapshot && closeoutDifference !== null ? (
-                  <div className="mt-5 rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
-                    <p className="text-sm subtle">Diferencia</p>
-                    <p className="mt-2 text-2xl font-semibold">{formatCop(closeoutDifference)}</p>
-                    <p className="mt-2 text-sm subtle">
+                  <div
+                    className={`mt-5 rounded-3xl p-5 ring-1 ${
+                      closeoutDifference === 0
+                        ? "bg-emerald-50 ring-emerald-200"
+                        : closeoutDifference < 0
+                          ? "bg-rose-50 ring-rose-200"
+                          : "bg-amber-50 ring-amber-200"
+                    }`}
+                  >
+                    <p
+                      className={`text-sm ${
+                        closeoutDifference === 0
+                          ? "text-emerald-700"
+                          : closeoutDifference < 0
+                            ? "text-rose-700"
+                            : "text-amber-700"
+                      }`}
+                    >
+                      Diferencia
+                    </p>
+                    <p
+                      className={`mt-2 text-2xl font-semibold ${
+                        closeoutDifference === 0
+                          ? "text-emerald-700"
+                          : closeoutDifference < 0
+                            ? "text-rose-700"
+                            : "text-amber-700"
+                      }`}
+                    >
+                      {formatCop(closeoutDifference)}
+                    </p>
+                    <p
+                      className={`mt-2 text-sm ${
+                        closeoutDifference === 0
+                          ? "text-emerald-700"
+                          : closeoutDifference < 0
+                            ? "text-rose-700"
+                            : "text-amber-700"
+                      }`}
+                    >
                       {closeoutDifference === 0
                         ? "Caja cuadrada"
                         : closeoutDifference > 0
@@ -3192,7 +3371,7 @@ export function PosApp({ initialData }: PosAppProps) {
                           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                             <div className="flex items-start gap-3">
                               <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-xl">
-                                {product.image || "🍽️"}
+                                {renderProductBadge(product)}
                               </span>
                               <div>
                                 <p className="font-semibold">{product.name}</p>
@@ -3641,7 +3820,13 @@ export function PosApp({ initialData }: PosAppProps) {
                     <button
                       key={method}
                       type="button"
-                      onClick={() => setSelectedPaymentMethod(method)}
+                      onClick={() => {
+                        setSelectedPaymentMethod(method);
+
+                        if (method !== "Efectivo") {
+                          setCashReceived("");
+                        }
+                      }}
                       className={`rounded-2xl px-3 py-3 text-sm font-semibold transition ${
                         isActive
                           ? "bg-ink text-white"
@@ -3653,6 +3838,68 @@ export function PosApp({ initialData }: PosAppProps) {
                   );
                 })}
               </div>
+
+              {selectedPaymentMethod === "Efectivo" ? (
+                <div className="mt-4 rounded-3xl bg-[var(--surface)] p-4 ring-1 ring-[var(--border)]">
+                  <label className="grid gap-2">
+                    <span className="text-sm font-semibold">Dinero recibido</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={cashReceived}
+                      onChange={(event) => setCashReceived(event.target.value)}
+                      placeholder="Ej. 20000"
+                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-[var(--border)]">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                        Total a cobrar
+                      </p>
+                      <p className="mt-1 text-lg font-semibold">
+                        {formatCop(checkoutTotals.netTotal)}
+                      </p>
+                    </div>
+                    <div
+                      className={`rounded-2xl px-4 py-3 ring-1 ${
+                        cashChangeDue === null
+                          ? "bg-white ring-[var(--border)]"
+                          : cashChangeDue < 0
+                            ? "bg-rose-50 ring-rose-200"
+                            : "bg-emerald-50 ring-emerald-200"
+                      }`}
+                    >
+                      <p
+                        className={`text-xs font-semibold uppercase tracking-[0.16em] ${
+                          cashChangeDue === null
+                            ? "subtle"
+                            : cashChangeDue < 0
+                              ? "text-rose-700"
+                              : "text-emerald-700"
+                        }`}
+                      >
+                        {cashChangeDue !== null && cashChangeDue < 0 ? "Falta recibir" : "Cambio"}
+                      </p>
+                      <p
+                        className={`mt-1 text-lg font-semibold ${
+                          cashChangeDue === null
+                            ? ""
+                            : cashChangeDue < 0
+                              ? "text-rose-700"
+                              : "text-emerald-700"
+                        }`}
+                      >
+                        {cashChangeDue === null
+                          ? formatCop(0)
+                          : formatCop(Math.abs(cashChangeDue))}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="mt-6 rounded-3xl bg-[var(--surface)] p-4 ring-1 ring-[var(--border)]">
@@ -3688,7 +3935,8 @@ export function PosApp({ initialData }: PosAppProps) {
               disabled={
                 isSavingSale ||
                 !currentOrder.length ||
-                (requiresPaymentMethod && !selectedPaymentMethod)
+                (requiresPaymentMethod && !selectedPaymentMethod) ||
+                (isCashCheckout && (cashChangeDue === null || cashChangeDue < 0))
               }
               className="w-full rounded-2xl bg-[var(--success)] px-4 py-4 text-base font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -3700,18 +3948,18 @@ export function PosApp({ initialData }: PosAppProps) {
             Estado de la venta: {getSaleStatusLabel(checkoutTotals.saleStatus)}.
           </p>
 
-          {(can("sales.history") || can("sales.cancel.request")) && recentSales.length ? (
+          {(can("sales.history") || can("sales.cancel.request")) && visibleRecentSales.length ? (
             <div className="mt-6 border-t border-[var(--border)] pt-5">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-sm font-semibold">
                   {can("sales.history") ? "Historial reciente" : "Ventas recientes"}
                 </p>
                 <span className="text-xs subtle">
-                  Últimas {can("sales.history") ? "10" : "8"}
+                  {isJefaView ? `Últimas ${can("sales.history") ? "10" : "8"}` : "Últimos 30 min"}
                 </span>
               </div>
               <div className="mt-3 space-y-3">
-                {recentSales.map((sale) => (
+                {visibleRecentSales.map((sale) => (
                   <div
                     key={sale.id}
                     className="rounded-2xl bg-slate-50 px-4 py-3 text-sm ring-1 ring-[var(--border)]"

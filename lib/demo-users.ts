@@ -1,4 +1,5 @@
 import type { PosRole } from "@/lib/pos-permissions";
+import managedUsers from "@/config/managed-users.json";
 
 export type DemoUser = {
   username: string;
@@ -8,36 +9,7 @@ export type DemoUser = {
   role: PosRole;
 };
 
-export const demoUsers: DemoUser[] = [
-  {
-    username: "jefa1",
-    email: "jefa1@xiomycafe.com",
-    password: "abc123",
-    fullName: "Xiomy",
-    role: "jefa"
-  },
-  {
-    username: "jefa2",
-    email: "jefa2@xiomycafe.com",
-    password: "abc123",
-    fullName: "Angie",
-    role: "jefa"
-  },
-  {
-    username: "cajera1",
-    email: "cajera1@xiomycafe.com",
-    password: "abc123",
-    fullName: "Cajera",
-    role: "cajero"
-  },
-  {
-    username: "cajera2",
-    email: "cajera2@xiomycafe.com",
-    password: "abc123",
-    fullName: "Cajera",
-    role: "cajero"
-  }
-];
+export const demoUsers: DemoUser[] = managedUsers as DemoUser[];
 
 export function findDemoUserByEmail(email: string) {
   return demoUsers.find((user) => user.email.toLowerCase() === email.toLowerCase()) ?? null;
