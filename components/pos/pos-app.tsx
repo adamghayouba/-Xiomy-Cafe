@@ -521,6 +521,22 @@ export function PosApp({ initialData }: PosAppProps) {
   }, [isJefaView]);
 
   useEffect(() => {
+    setMenuProducts(initialData.products);
+  }, [initialData.products]);
+
+  useEffect(() => {
+    setClients(initialData.clients);
+  }, [initialData.clients]);
+
+  useEffect(() => {
+    setDailySummary(initialData.dailySummary ?? emptyDailySummary());
+  }, [initialData.dailySummary]);
+
+  useEffect(() => {
+    setRecentSales(initialData.recentSales);
+  }, [initialData.recentSales]);
+
+  useEffect(() => {
     if (
       selectedCategory === "Bebidas" &&
       selectedBeverageSubcategory === "Alcohol" &&
