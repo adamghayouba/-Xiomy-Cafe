@@ -2,6 +2,7 @@
 
 import {
   BadgeDollarSign,
+  Calculator,
   Download,
   FileSpreadsheet,
   PencilLine,
@@ -339,9 +340,15 @@ export function PosApp({ initialData }: PosAppProps) {
   }, [alcoholProducts, selectedAlcoholType]);
 
   const visibleProducts = useMemo(() => {
+    const normalizedSearch = searchQuery.toLowerCase().trim();
+
     return menuProducts.filter((product) => {
       if (!product.active) {
         return false;
+      }
+
+      if (normalizedSearch) {
+        return product.name.toLowerCase().includes(normalizedSearch);
       }
 
       if (product.category !== selectedCategory) {
@@ -368,7 +375,7 @@ export function PosApp({ initialData }: PosAppProps) {
         }
       }
 
-      return product.name.toLowerCase().includes(searchQuery.toLowerCase().trim());
+      return true;
     });
   }, [
     menuProducts,
@@ -389,7 +396,13 @@ export function PosApp({ initialData }: PosAppProps) {
     [currentOrder]
   );
   const adminCatalogProducts = useMemo(() => {
+    const normalizedSearch = searchQuery.toLowerCase().trim();
+
     return menuProducts.filter((product) => {
+      if (normalizedSearch) {
+        return product.name.toLowerCase().includes(normalizedSearch);
+      }
+
       if (product.category !== selectedCategory) {
         return false;
       }
@@ -414,7 +427,7 @@ export function PosApp({ initialData }: PosAppProps) {
         }
       }
 
-      return product.name.toLowerCase().includes(searchQuery.toLowerCase().trim());
+      return true;
     });
   }, [
     menuProducts,
@@ -1531,51 +1544,35 @@ export function PosApp({ initialData }: PosAppProps) {
           </div>
 
           {!isJefaView ? (
-            <div
-              className={`grid gap-3 ${
-                can("finance.viewAdvanced") ? "sm:grid-cols-2 xl:grid-cols-5" : "sm:grid-cols-2"
-              }`}
-            >
-              <SummaryCard
-                title="Ventas hoy"
-                value={`${dailySummary.salesCount}`}
-                note="Transacciones registradas"
-                icon={<Wallet className="h-5 w-5" />}
-              />
-              <SummaryCard
-                title={can("finance.viewAdvanced") ? "Venta bruta" : "Cobrado hoy"}
-                value={formatCop(
-                  can("finance.viewAdvanced") ? dailySummary.grossSales : dailySummary.netRevenue
-                )}
-                note={
-                  can("finance.viewAdvanced")
-                    ? "Antes de descuentos"
-                    : "Monto neto recibido"
-                }
-                icon={<ShoppingCart className="h-5 w-5" />}
-              />
-              {can("finance.viewAdvanced") ? (
-                <>
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                {can("cash.closeout") ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCloseoutOpen(true);
+                      setCloseoutMessage(null);
+                    }}
+                    className="inline-flex items-center gap-3 rounded-2xl bg-white px-6 py-[1.05rem] text-base font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--accent-soft)] text-[var(--foreground)]">
+                      <Calculator className="h-5 w-5" />
+                    </span>
+                    Caja
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="flex justify-end">
+                <div className="w-full sm:max-w-[270px]">
                   <SummaryCard
-                    title="Descuentos"
-                    value={formatCop(dailySummary.discountTotal)}
-                    note="Incluye familia"
-                    icon={<Users className="h-5 w-5" />}
-                  />
-                  <SummaryCard
-                    title="Neto"
-                    value={formatCop(dailySummary.netRevenue)}
-                    note="Cobro real del día"
+                    title="Ventas hoy"
+                    value={`${dailySummary.salesCount}`}
+                    note="Transacciones registradas"
                     icon={<Wallet className="h-5 w-5" />}
                   />
-                  <SummaryCard
-                    title="Ganancia"
-                    value={formatCop(dailySummary.grossProfit)}
-                    note="Neto menos costo estimado"
-                    icon={<BadgeDollarSign className="h-5 w-5" />}
-                  />
-                </>
-              ) : null}
+                </div>
+              </div>
             </div>
           ) : null}
         </div>
