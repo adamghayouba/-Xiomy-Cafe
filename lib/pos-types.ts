@@ -221,6 +221,8 @@ export type CashCloseoutRecord = {
   closedByLabel: string;
   cashierLabel: string;
   createdAt: string;
+  reviewedByLabel: string | null;
+  reviewedAt: string | null;
 };
 
 export type PosBootstrapData = {

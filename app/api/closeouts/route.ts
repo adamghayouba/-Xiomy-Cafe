@@ -6,7 +6,7 @@ import {
 } from "@/lib/pos-domain";
 
 const closeoutSelect =
-  "id, business_date, starting_cash, counted_cash, expected_cash, difference, notes, closed_by_label, cashier_label, created_at";
+  "id, business_date, starting_cash, counted_cash, expected_cash, difference, notes, closed_by_label, cashier_label, created_at, reviewed_by_label, reviewed_at";
 
 export async function GET(request: Request) {
   const context = await requireApiContext();
@@ -126,5 +126,39 @@ export async function POST(request: Request) {
     snapshot: mapCashCloseoutSnapshotRecord(
       Array.isArray(snapshotResult.data) ? snapshotResult.data[0] : snapshotResult.data
     )
+  });
+}
+
+export async function PATCH(request: Request) {
+  const context = await requireApiContext();
+
+  if (!context.ok) {
+    return context.response;
+  }
+
+  if (!context.permissions["cash.closeout.review"]) {
+    return NextResponse.json({ error: "No autorizado." }, { status: 403 });
+  }
+
+  const body = await request.json();
+  const closeoutId = String(body.closeoutId ?? "").trim();
+
+  if (!closeoutId) {
+    return NextResponse.json({ error: "Debes indicar el cierre a revisar." }, { status: 400 });
+  }
+
+  const { data, error } = await context.supabase.rpc("acknowledge_cash_closeout", {
+    p_closeout_id: closeoutId
+  });
+
+  if (error) {
+    return NextResponse.json(
+      { error: error.message ?? "No fue posible marcar el cierre como revisado." },
+      { status: 400 }
+    );
+  }
+
+  return NextResponse.json({
+    closeout: data ? mapCashCloseoutRecord(data as Record<string, unknown>) : null
   });
 }

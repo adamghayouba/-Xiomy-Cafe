@@ -273,6 +273,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [isResolvingCancellation, startCancellationResolveTransition] = useTransition();
   const [isLoadingCloseout, startCloseoutTransition] = useTransition();
   const [isSavingCloseout, startCloseoutSaveTransition] = useTransition();
+  const [isAcknowledgingCloseout, startCloseoutAcknowledgeTransition] = useTransition();
   const productNameInputRef = useRef<HTMLInputElement | null>(null);
 
   function can(permission: PosPermission) {
@@ -517,7 +518,9 @@ export function PosApp({ initialData }: PosAppProps) {
     closeoutSnapshot && Number.isFinite(countedCashNumber) && countedCashNumber < closeoutSnapshot.expectedCash
       ? closeoutSnapshot.expectedCash - countedCashNumber
       : 0;
-  const shortCloseoutAlerts = closeoutHistory.filter((closeout) => closeout.difference < 0);
+  const discrepancyAlerts = closeoutHistory.filter(
+    (closeout) => closeout.difference !== 0 && !closeout.reviewedAt
+  );
 
   useEffect(() => {
     if (isJefaView) {
@@ -1436,6 +1439,37 @@ export function PosApp({ initialData }: PosAppProps) {
     });
   }
 
+  function acknowledgeCloseout(closeoutId: string) {
+    if (!can("cash.closeout.review")) {
+      return;
+    }
+
+    startCloseoutAcknowledgeTransition(async () => {
+      const response = await fetch("/api/closeouts", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          closeoutId
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        setCloseoutMessage(result.error ?? "No fue posible marcar la alerta como revisada.");
+        return;
+      }
+
+      setCloseoutMessage("Alerta de caja marcada como revisada.");
+      setCloseoutHistory((currentHistory) =>
+        currentHistory.map((closeout) =>
+          closeout.id === closeoutId ? (result.closeout as CashCloseoutRecord) : closeout
+        )
+      );
+    });
+  }
+
   useEffect(() => {
     if (!can("accounts.fatherTab")) {
       return;
@@ -1668,40 +1702,52 @@ export function PosApp({ initialData }: PosAppProps) {
         </section>
       ) : null}
 
-      {isJefaView && shortCloseoutAlerts.length ? (
+      {isJefaView && discrepancyAlerts.length ? (
         <section className="panel p-5 sm:p-6 ring-1 ring-rose-200">
           <div className="rounded-3xl bg-rose-50 p-5 ring-1 ring-rose-200">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-lg font-semibold text-rose-700">Alerta de caja</p>
                 <p className="mt-1 text-sm text-rose-700">
-                  La caja fue cerrada con un faltante de{" "}
-                  {formatCop(Math.abs(shortCloseoutAlerts[0].difference))}.
+                  {discrepancyAlerts[0].difference < 0
+                    ? `La caja fue cerrada con un faltante de ${formatCop(Math.abs(discrepancyAlerts[0].difference))}.`
+                    : `La caja fue cerrada con un sobrante de ${formatCop(discrepancyAlerts[0].difference)}.`}
                 </p>
               </div>
               <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
-                {shortCloseoutAlerts.length} cierre{shortCloseoutAlerts.length === 1 ? "" : "s"} con faltante
+                {discrepancyAlerts.length} alerta{discrepancyAlerts.length === 1 ? "" : "s"} pendiente{discrepancyAlerts.length === 1 ? "" : "s"}
               </span>
             </div>
 
             <div className="mt-4 space-y-3">
-              {shortCloseoutAlerts.slice(0, 3).map((closeout) => (
+              {discrepancyAlerts.slice(0, 3).map((closeout) => (
                 <div
                   key={closeout.id}
                   className="rounded-2xl bg-white px-4 py-3 text-sm ring-1 ring-rose-100"
                 >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="font-semibold text-rose-700">
-                        {closeout.cashierLabel} · Faltante {formatCop(Math.abs(closeout.difference))}
+                        {closeout.cashierLabel} · {closeout.difference < 0 ? "Faltante" : "Sobrante"}{" "}
+                        {formatCop(Math.abs(closeout.difference))}
                       </p>
                       <p className="mt-1 subtle">
                         Esperado: {formatCop(closeout.expectedCash)} · Contado: {formatCop(closeout.countedCash)}
                       </p>
                     </div>
-                    <span className="text-xs subtle">
-                      {closeout.businessDate.split("-").reverse().join("/")} · {formatSaleTime(closeout.createdAt)}
-                    </span>
+                    <div className="flex flex-col items-start gap-3 sm:items-end">
+                      <span className="text-xs subtle">
+                        {closeout.businessDate.split("-").reverse().join("/")} · {formatSaleTime(closeout.createdAt)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => acknowledgeCloseout(closeout.id)}
+                        disabled={isAcknowledgingCloseout}
+                        className="rounded-2xl bg-white px-4 py-3 text-xs font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        {isAcknowledgingCloseout ? "Guardando..." : "Marcar como revisado"}
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -2262,6 +2308,11 @@ export function PosApp({ initialData }: PosAppProps) {
                                   <p className="mt-1 subtle">
                                     Diferencia: {formatCop(closeout.difference)}
                                   </p>
+                                  {closeout.reviewedAt ? (
+                                    <p className="mt-1 subtle">
+                                      Revisado por {closeout.reviewedByLabel ?? "Jefa"} · {formatSaleTime(closeout.reviewedAt)}
+                                    </p>
+                                  ) : null}
                                 </div>
                                 <span className="text-xs subtle">
                                   {formatSaleTime(closeout.createdAt)}

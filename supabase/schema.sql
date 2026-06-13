@@ -156,6 +156,9 @@ create table if not exists public.cash_closeouts (
   expected_cash numeric(12, 2) not null default 0,
   counted_cash numeric(12, 2) not null default 0,
   difference numeric(12, 2) not null default 0,
+  reviewed_by_user_id uuid references auth.users(id) on delete set null,
+  reviewed_by_label text,
+  reviewed_at timestamptz,
   notes text,
   created_at timestamptz not null default timezone('utc', now())
 );
@@ -205,6 +208,9 @@ alter table public.sales add column if not exists cancellation_approved_by_user_
 alter table public.sales add column if not exists cancellation_approved_by_label text;
 alter table public.sales add column if not exists cancellation_approved_at timestamptz;
 alter table public.sales alter column payment_method drop not null;
+alter table public.cash_closeouts add column if not exists reviewed_by_user_id uuid references auth.users(id) on delete set null;
+alter table public.cash_closeouts add column if not exists reviewed_by_label text;
+alter table public.cash_closeouts add column if not exists reviewed_at timestamptz;
 
 update public.sales
 set
@@ -1188,6 +1194,71 @@ end;
 $$;
 
 grant execute on function public.create_cash_closeout(numeric, numeric, text) to authenticated;
+
+drop function if exists public.acknowledge_cash_closeout(uuid);
+
+create or replace function public.acknowledge_cash_closeout(
+  p_closeout_id uuid
+)
+returns public.cash_closeouts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role public.pos_role;
+  v_profile public.profiles%rowtype;
+  v_closeout public.cash_closeouts%rowtype;
+  v_label text;
+begin
+  if v_user_id is null then
+    raise exception 'No authenticated user for closeout review.';
+  end if;
+
+  select * into v_profile
+  from public.profiles
+  where id = v_user_id;
+
+  v_role := v_profile.role;
+
+  if v_role <> 'jefa' then
+    raise exception 'Solo jefa puede revisar alertas de caja.';
+  end if;
+
+  select *
+  into v_closeout
+  from public.cash_closeouts
+  where id = p_closeout_id
+  for update;
+
+  if not found then
+    raise exception 'El cierre de caja no existe.';
+  end if;
+
+  if coalesce(v_closeout.difference, 0) = 0 then
+    raise exception 'Solo los cierres con discrepancia requieren revisión.';
+  end if;
+
+  v_label := coalesce(
+    nullif(trim(coalesce(v_profile.full_name, '')), ''),
+    nullif(trim(coalesce(v_profile.email, '')), ''),
+    'Jefa'
+  );
+
+  update public.cash_closeouts
+  set
+    reviewed_by_user_id = v_user_id,
+    reviewed_by_label = v_label,
+    reviewed_at = timezone('utc', now())
+  where id = p_closeout_id
+  returning * into v_closeout;
+
+  return v_closeout;
+end;
+$$;
+
+grant execute on function public.acknowledge_cash_closeout(uuid) to authenticated;
 
 drop function if exists public.sales_today_summary();
 

@@ -405,7 +405,9 @@ export function mapCashCloseoutRecord(record: Record<string, unknown>): CashClos
     notes: record.notes ? String(record.notes) : null,
     closedByLabel: String(record.closed_by_label ?? "Caja"),
     cashierLabel: String(record.cashier_label ?? "Caja"),
-    createdAt: String(record.created_at ?? "")
+    createdAt: String(record.created_at ?? ""),
+    reviewedByLabel: record.reviewed_by_label ? String(record.reviewed_by_label) : null,
+    reviewedAt: record.reviewed_at ? String(record.reviewed_at) : null
   };
 }
 
