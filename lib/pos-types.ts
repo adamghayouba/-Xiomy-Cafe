@@ -233,6 +233,13 @@ export type PosBootstrapData = {
   dailySummary: DailySummary;
 };
 
+export type DailySalesHistoryResponse = {
+  sales: SaleHistoryEntry[];
+  rangeStart: string;
+  rangeEnd: string;
+  businessDate: string;
+};
+
 export type ProductFormState = {
   id?: string;
   name: string;

@@ -52,6 +52,7 @@ import type {
   ClientTabAccountsResponse,
   ClientReportPeriod,
   ClientUsageReport,
+  DailySalesHistoryResponse,
   DailySummary,
   OrderItem,
   PosBootstrapData,
@@ -258,6 +259,14 @@ export function PosApp({ initialData }: PosAppProps) {
   const [closeoutNotes, setCloseoutNotes] = useState("");
   const [closeoutSnapshot, setCloseoutSnapshot] = useState<CashCloseoutSnapshot | null>(null);
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
+  const [isDailySalesOpen, setIsDailySalesOpen] = useState(false);
+  const [dailySalesHistory, setDailySalesHistory] = useState<SaleHistoryEntry[]>([]);
+  const [dailySalesRange, setDailySalesRange] = useState<{
+    rangeStart: string;
+    rangeEnd: string;
+    businessDate: string;
+  } | null>(null);
+  const [dailySalesError, setDailySalesError] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [isSavingSale, startSaleTransition] = useTransition();
   const [isSavingProduct, startProductTransition] = useTransition();
@@ -274,6 +283,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [isLoadingCloseout, startCloseoutTransition] = useTransition();
   const [isSavingCloseout, startCloseoutSaveTransition] = useTransition();
   const [isAcknowledgingCloseout, startCloseoutAcknowledgeTransition] = useTransition();
+  const [isLoadingDailySales, startDailySalesTransition] = useTransition();
   const productNameInputRef = useRef<HTMLInputElement | null>(null);
 
   function can(permission: PosPermission) {
@@ -1385,6 +1395,33 @@ export function PosApp({ initialData }: PosAppProps) {
     });
   }
 
+  function loadDailySalesHistory() {
+    if (!can("sales.summary")) {
+      return;
+    }
+
+    startDailySalesTransition(async () => {
+      setDailySalesError(null);
+
+      const response = await fetch("/api/sales");
+      const result = (await response.json()) as DailySalesHistoryResponse & {
+        error?: string;
+      };
+
+      if (!response.ok) {
+        setDailySalesError(result.error ?? "No fue posible cargar las ventas del día.");
+        return;
+      }
+
+      setDailySalesHistory(result.sales ?? []);
+      setDailySalesRange({
+        rangeStart: result.rangeStart,
+        rangeEnd: result.rangeEnd,
+        businessDate: result.businessDate
+      });
+    });
+  }
+
   function saveCashCloseout() {
     if (!can("cash.closeout")) {
       return;
@@ -1523,6 +1560,15 @@ export function PosApp({ initialData }: PosAppProps) {
   }, [isCloseoutOpen, initialData.profile.role]);
 
   useEffect(() => {
+    if (!isDailySalesOpen || !can("sales.summary")) {
+      return;
+    }
+
+    loadDailySalesHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDailySalesOpen, initialData.profile.role]);
+
+  useEffect(() => {
     if (!can("finance.viewAdvanced")) {
       return;
     }
@@ -1604,6 +1650,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     value={`${dailySummary.salesCount}`}
                     note="Transacciones registradas"
                     icon={<Wallet className="h-5 w-5" />}
+                    onClick={() => setIsDailySalesOpen(true)}
                   />
                 </div>
               </div>
@@ -2724,6 +2771,117 @@ export function PosApp({ initialData }: PosAppProps) {
                 </div>
               ) : null}
             </>
+          ) : null}
+
+          {isDailySalesOpen ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-[var(--background)] sm:items-center sm:justify-center">
+              <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-[var(--surface)] p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-4xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-lg font-semibold">Ventas del día</p>
+                    <p className="mt-1 text-sm subtle">
+                      Historial operativo del turno actual desde el último cierre de caja.
+                    </p>
+                    {dailySalesRange ? (
+                      <p className="mt-2 text-xs subtle">
+                        {dailySalesRange.businessDate.split("-").reverse().join("/")} · Desde{" "}
+                        {formatSaleTime(dailySalesRange.rangeStart)} hasta{" "}
+                        {formatSaleTime(dailySalesRange.rangeEnd)}
+                      </p>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsDailySalesOpen(false)}
+                    className="inline-flex items-center justify-center self-start rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {dailySalesError ? (
+                  <div className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm text-rose-700 ring-1 ring-rose-200">
+                    {dailySalesError}
+                  </div>
+                ) : null}
+
+                <div className="mt-5 rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold">Ventas registradas</p>
+                    <span className="text-xs subtle">
+                      {dailySalesHistory.length} transacci
+                      {dailySalesHistory.length === 1 ? "ón" : "ones"}
+                    </span>
+                  </div>
+
+                  {isLoadingDailySales ? (
+                    <div className="mt-4 rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                      Cargando ventas del día...
+                    </div>
+                  ) : dailySalesHistory.length ? (
+                    <div className="mt-4 space-y-3">
+                      {dailySalesHistory.map((sale) => (
+                        <div
+                          key={sale.id}
+                          className="rounded-3xl bg-[var(--surface)] px-4 py-4 ring-1 ring-[var(--border)]"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-semibold">
+                                  Venta {sale.id.slice(0, 8)}
+                                </p>
+                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold ring-1 ring-[var(--border)]">
+                                  {sale.paymentMethod ?? "Sin cobro"}
+                                </span>
+                                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold ring-1 ring-[var(--border)]">
+                                  {getSaleStatusLabel(sale.saleStatus)}
+                                </span>
+                                {sale.isCancelled ? (
+                                  <span className="rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-rose-700 ring-1 ring-rose-200">
+                                    Anulada
+                                  </span>
+                                ) : null}
+                              </div>
+                              <p className="mt-2 text-sm subtle">
+                                {sale.clientName
+                                  ? `${sale.clientName}${sale.clientPricingType ? ` · ${getClientPricingLabel(sale.clientPricingType)}` : ""}`
+                                  : "Cliente general"}
+                              </p>
+                              <p className="mt-1 text-sm subtle">
+                                {sale.itemsCount} producto
+                                {sale.itemsCount === 1 ? "" : "s"} · Bruto{" "}
+                                {formatCop(sale.grossTotal)}
+                                {sale.discountTotal > 0
+                                  ? ` · Descuento ${formatCop(sale.discountTotal)}`
+                                  : ""}
+                              </p>
+                            </div>
+                            <div className="text-left sm:text-right">
+                              <p className="text-lg font-semibold">
+                                {formatCop(sale.netTotal)}
+                              </p>
+                              <p className="mt-1 text-sm subtle">
+                                {formatSaleTime(sale.createdAt)}
+                              </p>
+                              {sale.cancellationRequestStatus === "pending" ? (
+                                <p className="mt-1 text-xs font-semibold text-amber-700">
+                                  Anulación pendiente
+                                </p>
+                              ) : null}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                      No hay ventas registradas en el turno actual.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : null}
 
           {cancellationSale ? (
@@ -4346,15 +4504,21 @@ function SummaryCard({
   title,
   value,
   note,
-  icon
+  icon,
+  onClick
 }: {
   title: string;
   value: string;
   note: string;
   icon: React.ReactNode;
+  onClick?: () => void;
 }) {
-  return (
-    <div className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)]">
+  const className = `rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] transition ${
+    onClick ? "hover:ring-[var(--accent)]" : ""
+  }`;
+
+  const content = (
+    <>
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-sm subtle">{title}</p>
@@ -4365,6 +4529,20 @@ function SummaryCard({
         </div>
       </div>
       <p className="mt-3 text-sm subtle">{note}</p>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={`${className} w-full text-left`}>
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className={className}>
+      {content}
     </div>
   );
 }
