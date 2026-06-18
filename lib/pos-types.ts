@@ -234,7 +234,7 @@ export type PosBootstrapData = {
 };
 
 export type DailySalesHistoryResponse = {
-  sales: SaleHistoryEntry[];
+  sales: ClientTransactionEntry[];
   rangeStart: string;
   rangeEnd: string;
   businessDate: string;

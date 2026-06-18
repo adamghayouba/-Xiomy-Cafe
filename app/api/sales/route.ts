@@ -2,10 +2,14 @@ import { NextResponse } from "next/server";
 import { isPaymentMethod } from "@/lib/pos-data";
 import { isSettlementType } from "@/lib/pos-domain";
 import { requireApiContext } from "@/lib/api-context";
-import { mapSaleRecord, mapSummaryRecord } from "@/lib/pos-domain";
+import {
+  mapClientTransactionRecord,
+  mapSaleRecord,
+  mapSummaryRecord
+} from "@/lib/pos-domain";
 
 const salesSelect =
-  "id, created_at, payment_method, settlement_type, gross_total, discount_total, net_total, estimated_cost, gross_profit, items_count, sale_status, is_cancelled, cancellation_reason, cancellation_requested_at, cancellation_approved_at, cancellation_request_status, client:clients(full_name, pricing_type)";
+  "id, client_id, created_at, payment_method, settlement_type, gross_total, discount_total, net_total, estimated_cost, gross_profit, items_count, sale_status, is_cancelled, cancellation_reason, cancellation_requested_at, cancellation_approved_at, cancellation_request_status, client:clients(full_name, pricing_type), sale_items(id, quantity, unit_price, line_total, product:products(name))";
 
 function getCurrentBogotaWindow() {
   const formatter = new Intl.DateTimeFormat("sv-SE", {
@@ -78,7 +82,7 @@ export async function GET() {
     .eq("cashier_user_id", context.profile.id)
     .gte("created_at", rangeStart)
     .lt("created_at", window.endIso)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: true });
 
   if (error) {
     return NextResponse.json(
@@ -88,7 +92,9 @@ export async function GET() {
   }
 
   return NextResponse.json({
-    sales: (data ?? []).map((row) => mapSaleRecord(row as Record<string, unknown>)),
+    sales: (data ?? []).map((row) =>
+      mapClientTransactionRecord(row as Record<string, unknown>)
+    ),
     rangeStart,
     rangeEnd: window.nowIso,
     businessDate: window.businessDate

@@ -51,6 +51,7 @@ import type {
   ClientTabAccountSummary,
   ClientTabAccountsResponse,
   ClientReportPeriod,
+  ClientTransactionEntry,
   ClientUsageReport,
   DailySalesHistoryResponse,
   DailySummary,
@@ -260,7 +261,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [closeoutSnapshot, setCloseoutSnapshot] = useState<CashCloseoutSnapshot | null>(null);
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
   const [isDailySalesOpen, setIsDailySalesOpen] = useState(false);
-  const [dailySalesHistory, setDailySalesHistory] = useState<SaleHistoryEntry[]>([]);
+  const [dailySalesHistory, setDailySalesHistory] = useState<ClientTransactionEntry[]>([]);
   const [dailySalesRange, setDailySalesRange] = useState<{
     rangeStart: string;
     rangeEnd: string;
@@ -2820,7 +2821,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     </div>
                   ) : dailySalesHistory.length ? (
                     <div className="mt-4 space-y-3">
-                      {dailySalesHistory.map((sale) => (
+                      {dailySalesHistory.map((sale, index) => (
                         <div
                           key={sale.id}
                           className="rounded-3xl bg-[var(--surface)] px-4 py-4 ring-1 ring-[var(--border)]"
@@ -2829,7 +2830,7 @@ export function PosApp({ initialData }: PosAppProps) {
                             <div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <p className="font-semibold">
-                                  Venta {sale.id.slice(0, 8)}
+                                  Venta {index + 1}
                                 </p>
                                 <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold ring-1 ring-[var(--border)]">
                                   {sale.paymentMethod ?? "Sin cobro"}
@@ -2856,6 +2857,25 @@ export function PosApp({ initialData }: PosAppProps) {
                                   ? ` · Descuento ${formatCop(sale.discountTotal)}`
                                   : ""}
                               </p>
+                              {sale.items.length ? (
+                                <div className="mt-3 space-y-2">
+                                  {sale.items.map((item) => (
+                                    <div
+                                      key={item.id}
+                                      className="rounded-2xl bg-white px-3 py-2 text-sm ring-1 ring-[var(--border)]"
+                                    >
+                                      <div className="flex items-center justify-between gap-3">
+                                        <span>
+                                          {item.quantity} x {item.productName}
+                                        </span>
+                                        <span className="font-medium">
+                                          {formatCop(item.lineTotal)}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                             <div className="text-left sm:text-right">
                               <p className="text-lg font-semibold">
