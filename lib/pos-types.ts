@@ -209,12 +209,17 @@ export type CashCloseoutSnapshot = {
   cashWithdrawals: number;
   cancelledSales: number;
   expectedCash: number;
+  accumulatedCash: number;
+  totalAvailableCash: number;
 };
+
+export type CashWithdrawalScope = "shift" | "accumulated";
 
 export type CashWithdrawalRecord = {
   id: string;
   businessDate: string;
   amount: number;
+  scope: CashWithdrawalScope;
   note: string | null;
   createdByLabel: string;
   createdAt: string;

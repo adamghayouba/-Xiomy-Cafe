@@ -8,6 +8,7 @@ import { isPosRole, type PosRole } from "@/lib/pos-permissions";
 import type {
   CashCloseoutRecord,
   CashCloseoutSnapshot,
+  CashWithdrawalScope,
   CashWithdrawalRecord,
   ClientPaymentEntry,
   ClientReportPeriod,
@@ -392,15 +393,22 @@ export function mapCashCloseoutSnapshotRecord(
     repaymentsReceived: Number(record?.repayments_received ?? 0),
     cashWithdrawals: Number(record?.cash_withdrawals ?? 0),
     cancelledSales: Number(record?.cancelled_sales ?? 0),
-    expectedCash: Number(record?.expected_cash ?? 0)
+    expectedCash: Number(record?.expected_cash ?? 0),
+    accumulatedCash: Number(record?.accumulated_cash ?? 0),
+    totalAvailableCash: Number(record?.total_available_cash ?? 0)
   };
 }
 
 export function mapCashWithdrawalRecord(record: Record<string, unknown>): CashWithdrawalRecord {
+  const scopeValue = String(record.scope ?? "shift");
+  const scope: CashWithdrawalScope =
+    scopeValue === "accumulated" ? "accumulated" : "shift";
+
   return {
     id: String(record.id ?? ""),
     businessDate: String(record.business_date ?? ""),
     amount: Number(record.amount ?? 0),
+    scope,
     note: record.note ? String(record.note) : null,
     createdByLabel: String(record.created_by_label ?? "Caja"),
     createdAt: String(record.created_at ?? "")

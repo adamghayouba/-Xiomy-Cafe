@@ -82,6 +82,7 @@ type JefaProductSection = "catalogo" | "stock";
 type JefaClientSection = "lista" | "consumo";
 type AlcoholType = "Cerveza" | "Aguardiente" | "Ron" | "Whisky" | "Otros";
 type CloseoutEntryPoint = "caja" | "cierre";
+type CajaPanelAction = "withdrawal" | "cash-retirement";
 type AlcoholPresentation =
   | "Shot"
   | "Vaso"
@@ -265,7 +266,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
   const [closeoutEntryPoint, setCloseoutEntryPoint] = useState<CloseoutEntryPoint>("caja");
   const [cashWithdrawals, setCashWithdrawals] = useState<CashWithdrawalRecord[]>([]);
-  const [isWithdrawalFormOpen, setIsWithdrawalFormOpen] = useState(false);
+  const [activeCajaPanel, setActiveCajaPanel] = useState<CajaPanelAction | null>(null);
   const [withdrawalAmount, setWithdrawalAmount] = useState("");
   const [withdrawalNote, setWithdrawalNote] = useState("");
   const [isDailySalesOpen, setIsDailySalesOpen] = useState(false);
@@ -1412,8 +1413,25 @@ export function PosApp({ initialData }: PosAppProps) {
       return;
     }
 
+    const withdrawalScope = activeCajaPanel === "cash-retirement" ? "accumulated" : "shift";
+
     if (!Number.isFinite(withdrawalAmountNumber) || withdrawalAmountNumber <= 0) {
-      setCloseoutMessage("Ingresa un monto válido para la salida de caja.");
+      setCloseoutMessage(
+        withdrawalScope === "accumulated"
+          ? "Ingresa un monto válido para el retiro de efectivo."
+          : "Ingresa un monto válido para la salida de caja."
+      );
+      return;
+    }
+
+    if (
+      withdrawalScope === "accumulated" &&
+      closeoutSnapshot &&
+      withdrawalAmountNumber > closeoutSnapshot.accumulatedCash
+    ) {
+      setCloseoutMessage(
+        "El retiro no puede superar el efectivo acumulado disponible en caja."
+      );
       return;
     }
 
@@ -1425,20 +1443,30 @@ export function PosApp({ initialData }: PosAppProps) {
         },
         body: JSON.stringify({
           amount: withdrawalAmountNumber,
+          scope: withdrawalScope,
           note: withdrawalNote
         })
       });
       const result = await response.json();
 
       if (!response.ok) {
-        setCloseoutMessage(result.error ?? "No fue posible registrar la salida de caja.");
+        setCloseoutMessage(
+          result.error ??
+            (withdrawalScope === "accumulated"
+              ? "No fue posible registrar el retiro de efectivo."
+              : "No fue posible registrar la salida de caja.")
+        );
         return;
       }
 
-      setCloseoutMessage("Salida de caja registrada.");
+      setCloseoutMessage(
+        withdrawalScope === "accumulated"
+          ? "Retiro de efectivo registrado."
+          : "Salida de caja registrada."
+      );
       setWithdrawalAmount("");
       setWithdrawalNote("");
-      setIsWithdrawalFormOpen(false);
+      setActiveCajaPanel(null);
       loadCloseoutData();
     });
   }
@@ -1521,7 +1549,7 @@ export function PosApp({ initialData }: PosAppProps) {
       setIsCloseoutOpen(false);
       setCountedCash("");
       setCloseoutNotes("");
-      setIsWithdrawalFormOpen(false);
+      setActiveCajaPanel(null);
       setWithdrawalAmount("");
       setWithdrawalNote("");
     });
@@ -1684,6 +1712,7 @@ export function PosApp({ initialData }: PosAppProps) {
                       setCloseoutEntryPoint("caja");
                       setIsCloseoutOpen(true);
                       setCloseoutMessage(null);
+                      setActiveCajaPanel(null);
                     }}
                     className="inline-flex items-center gap-3 rounded-2xl bg-white px-6 py-[1.05rem] text-base font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
                   >
@@ -3069,33 +3098,61 @@ export function PosApp({ initialData }: PosAppProps) {
               <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-[var(--surface)] p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-3xl sm:rounded-[2rem] sm:p-6">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <p className="text-lg font-semibold">Cierre de caja</p>
+                    <p className="text-lg font-semibold">
+                      {closeoutEntryPoint === "caja" ? "Caja" : "Cierre de caja"}
+                    </p>
                     <p className="mt-1 text-sm subtle">
-                      Revisa el resumen, cuenta el efectivo y confirma el cierre en un segundo paso.
+                      {closeoutEntryPoint === "caja"
+                        ? "Control diario de efectivo, movimientos y salidas del turno."
+                        : "Revisa el resumen, cuenta el efectivo y confirma el cierre en un segundo paso."}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 self-start">
                     {closeoutEntryPoint === "caja" ? (
-                      <button
-                        type="button"
-                        onClick={() => setIsWithdrawalFormOpen((current) => !current)}
-                        className={`rounded-2xl px-4 py-3 text-sm font-semibold ring-1 transition ${
-                          isWithdrawalFormOpen
-                            ? "bg-rose-100 text-rose-700 ring-rose-200"
-                            : "bg-rose-50 text-rose-700 ring-rose-200 hover:bg-rose-100"
-                        }`}
-                      >
-                        <span className="inline-flex items-center gap-2">
-                          <CircleMinus className="h-4 w-4" />
-                          Salida de caja
-                        </span>
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveCajaPanel((current) =>
+                              current === "withdrawal" ? null : "withdrawal"
+                            )
+                          }
+                          className={`rounded-2xl px-4 py-3 text-sm font-semibold ring-1 transition ${
+                            activeCajaPanel === "withdrawal"
+                              ? "bg-rose-100 text-rose-700 ring-rose-200"
+                              : "bg-rose-50 text-rose-700 ring-rose-200 hover:bg-rose-100"
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <CircleMinus className="h-4 w-4" />
+                            Salida de caja
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setActiveCajaPanel((current) =>
+                              current === "cash-retirement" ? null : "cash-retirement"
+                            )
+                          }
+                          className={`rounded-2xl px-4 py-3 text-sm font-semibold ring-1 transition ${
+                            activeCajaPanel === "cash-retirement"
+                              ? "bg-sky-100 text-sky-800 ring-sky-200"
+                              : "bg-sky-50 text-sky-800 ring-sky-200 hover:bg-sky-100"
+                          }`}
+                        >
+                          <span className="inline-flex items-center gap-2">
+                            <BadgeDollarSign className="h-4 w-4" />
+                            Retiro de efectivo
+                          </span>
+                        </button>
+                      </>
                     ) : null}
                     <button
                       type="button"
                       onClick={() => {
                         setIsCloseoutOpen(false);
-                        setIsWithdrawalFormOpen(false);
+                        setActiveCajaPanel(null);
                       }}
                       className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
                     >
@@ -3104,7 +3161,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
                 </div>
 
-                {closeoutEntryPoint === "caja" && isWithdrawalFormOpen ? (
+                {closeoutEntryPoint === "caja" && activeCajaPanel === "withdrawal" ? (
                   <div className="mt-5 rounded-3xl bg-rose-50 p-4 ring-1 ring-rose-200 sm:p-5">
                     <div className="flex flex-col gap-4">
                       <div>
@@ -3149,7 +3206,7 @@ export function PosApp({ initialData }: PosAppProps) {
                         <button
                           type="button"
                           onClick={() => {
-                            setIsWithdrawalFormOpen(false);
+                            setActiveCajaPanel(null);
                             setWithdrawalAmount("");
                             setWithdrawalNote("");
                           }}
@@ -3174,34 +3231,140 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
                 ) : null}
 
-                <div className="mt-5 grid gap-4 sm:grid-cols-1">
-                  <label className="grid gap-2">
-                    <span className="text-sm font-medium">Efectivo contado</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={countedCash}
-                      onChange={(event) => setCountedCash(event.target.value)}
-                      placeholder="Ej. 150000"
-                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                    />
-                  </label>
-                </div>
+                {closeoutEntryPoint === "caja" && activeCajaPanel === "cash-retirement" ? (
+                  <div className="mt-5 rounded-3xl bg-sky-50 p-4 ring-1 ring-sky-200 sm:p-5">
+                    <div className="flex flex-col gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-sky-800">
+                          Retiro de efectivo
+                        </p>
+                        <p className="mt-1 text-sm text-sky-800">
+                          Retira dinero del acumulado físico guardado en caja, sin tocar el efectivo esperado del turno actual.
+                        </p>
+                        <p className="mt-2 text-xs font-medium uppercase tracking-[0.14em] text-sky-700">
+                          Resta efectivo acumulado en caja
+                        </p>
+                      </div>
 
-                {closeoutSnapshot ? (
-                  <div className="mt-5 space-y-4">
-                    <div className="rounded-[2rem] bg-[var(--accent-soft)] px-5 py-5 ring-1 ring-[var(--accent)]">
-                      <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-700">
-                        Efectivo esperado
-                      </p>
-                      <p className="mt-3 text-4xl font-semibold text-ink sm:text-5xl">
-                        {formatCop(closeoutSnapshot.expectedCash)}
-                      </p>
-                      <p className="mt-2 text-sm text-slate-700">
-                        Este es el número principal que la cajera debe contar en efectivo antes de confirmar el cierre.
-                      </p>
+                      <div className="rounded-3xl bg-white px-5 py-5 ring-1 ring-sky-200">
+                        <p className="text-sm font-semibold uppercase tracking-[0.16em] text-sky-700">
+                          Efectivo acumulado en caja
+                        </p>
+                        <p className="mt-3 text-4xl font-semibold text-sky-950 sm:text-5xl">
+                          {closeoutSnapshot
+                            ? formatCop(closeoutSnapshot.accumulatedCash)
+                            : isLoadingCloseout
+                              ? "Cargando..."
+                              : "No disponible"}
+                        </p>
+                        <p className="mt-3 text-sm text-sky-800">
+                          Este valor representa dinero de días previamente cerrados que sigue físicamente guardado en caja.
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Monto</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="100"
+                            value={withdrawalAmount}
+                            onChange={(event) => setWithdrawalAmount(event.target.value)}
+                            placeholder="Ej. 50000"
+                            className="rounded-2xl border border-sky-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-sky-400"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Nota opcional</span>
+                          <input
+                            type="text"
+                            value={withdrawalNote}
+                            onChange={(event) => setWithdrawalNote(event.target.value)}
+                            placeholder="Ej. entrega de efectivo"
+                            className="rounded-2xl border border-sky-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-sky-400"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setWithdrawalAmount(
+                              String(Math.max(closeoutSnapshot?.accumulatedCash ?? 0, 0))
+                            )
+                          }
+                          disabled={!closeoutSnapshot || closeoutSnapshot.accumulatedCash <= 0}
+                          className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold text-sky-800 ring-1 ring-sky-200 transition hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Retirar todo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveCajaPanel(null);
+                            setWithdrawalAmount("");
+                            setWithdrawalNote("");
+                          }}
+                          className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={saveCashWithdrawal}
+                          disabled={
+                            isSavingWithdrawal ||
+                            !Number.isFinite(withdrawalAmountNumber) ||
+                            withdrawalAmountNumber <= 0 ||
+                            (closeoutSnapshot
+                              ? withdrawalAmountNumber > closeoutSnapshot.accumulatedCash
+                              : false)
+                          }
+                          className="w-full rounded-2xl bg-sky-700 px-4 py-4 text-sm font-semibold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:bg-sky-200 disabled:text-sky-500 disabled:opacity-100"
+                        >
+                          {isSavingWithdrawal ? "Guardando..." : "Guardar retiro"}
+                        </button>
+                      </div>
                     </div>
+                  </div>
+                ) : null}
+
+                {closeoutSnapshot &&
+                !(closeoutEntryPoint === "caja" && activeCajaPanel === "cash-retirement") ? (
+                  <div className="mt-5 space-y-4">
+                    {closeoutEntryPoint === "caja" ? (
+                      <div className="rounded-[2rem] bg-[var(--accent-soft)] px-5 py-5 ring-1 ring-[var(--accent)]">
+                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-700">
+                          Efectivo esperado
+                        </p>
+                        <p className="mt-3 text-4xl font-semibold text-ink sm:text-5xl">
+                          {formatCop(closeoutSnapshot.expectedCash)}
+                        </p>
+                        <p className="mt-2 text-sm text-slate-700">
+                          Vista operativa del efectivo esperado del turno, sin entrar todavía al cierre oficial.
+                        </p>
+                      </div>
+                    ) : null}
+
+                    {closeoutEntryPoint === "cierre" ? (
+                      <div className="mt-1 grid gap-4 sm:grid-cols-1">
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Efectivo contado</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="100"
+                            value={countedCash}
+                            onChange={(event) => setCountedCash(event.target.value)}
+                            placeholder="Ej. 150000"
+                            className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                          />
+                        </label>
+                      </div>
+                    ) : null}
 
                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                     <MetricTile label="Ventas en efectivo" value={formatCop(closeoutSnapshot.cashSales)} />
@@ -3215,7 +3378,7 @@ export function PosApp({ initialData }: PosAppProps) {
 
                     <div className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
                       <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold">Historial de salidas</p>
+                        <p className="text-sm font-semibold">Historial de movimientos</p>
                         <span className="text-xs subtle">
                           {cashWithdrawals.length} registro{cashWithdrawals.length === 1 ? "" : "s"}
                         </span>
@@ -3230,6 +3393,17 @@ export function PosApp({ initialData }: PosAppProps) {
                               <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                                 <div>
                                   <p className="font-semibold">{formatCop(withdrawal.amount)}</p>
+                                  <p
+                                    className={`mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                      withdrawal.scope === "accumulated"
+                                        ? "bg-sky-100 text-sky-800"
+                                        : "bg-rose-100 text-rose-700"
+                                    }`}
+                                  >
+                                    {withdrawal.scope === "accumulated"
+                                      ? "Retiro de efectivo"
+                                      : "Salida de caja"}
+                                  </p>
                                   <p className="mt-1 subtle">
                                     {withdrawal.createdByLabel}
                                   </p>
@@ -3245,19 +3419,23 @@ export function PosApp({ initialData }: PosAppProps) {
                           ))
                         ) : (
                           <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
-                            Aún no hay salidas de caja registradas.
+                            Aún no hay movimientos de caja registrados.
                           </div>
                         )}
                       </div>
                     </div>
                   </div>
                 ) : !isLoadingCloseout ? (
-                  <div className="mt-5 rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
-                    No fue posible calcular el cierre de caja todavía.
-                  </div>
+                  closeoutEntryPoint === "cierre" ? (
+                    <div className="mt-5 rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                      No fue posible calcular el cierre de caja todavía.
+                    </div>
+                  ) : null
                 ) : null}
 
-                {closeoutSnapshot && closeoutDifference !== null ? (
+                {closeoutEntryPoint === "cierre" &&
+                closeoutSnapshot &&
+                closeoutDifference !== null ? (
                   <div
                     className={`mt-5 rounded-3xl p-5 ring-1 ${
                       closeoutDifference === 0
@@ -3307,33 +3485,37 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
                 ) : null}
 
-                <label className="mt-5 grid gap-2">
-                  <span className="text-sm font-medium">Notas opcionales</span>
-                  <textarea
-                    value={closeoutNotes}
-                    onChange={(event) => setCloseoutNotes(event.target.value)}
-                    placeholder="Observaciones del cierre"
-                    className="min-h-24 rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                  />
-                </label>
+                {closeoutEntryPoint === "cierre" ? (
+                  <label className="mt-5 grid gap-2">
+                    <span className="text-sm font-medium">Notas opcionales</span>
+                    <textarea
+                      value={closeoutNotes}
+                      onChange={(event) => setCloseoutNotes(event.target.value)}
+                      placeholder="Observaciones del cierre"
+                      className="min-h-24 rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+                ) : null}
 
-                <div className="mt-5 flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setIsCloseoutOpen(false)}
-                    className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveCashCloseout}
-                    disabled={isSavingCloseout || !Number.isFinite(countedCashNumber) || countedCashNumber < 0}
-                    className="w-full rounded-2xl bg-ink px-4 py-4 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {isSavingCloseout ? "Guardando..." : "Confirmar cierre de caja"}
-                  </button>
-                </div>
+                {closeoutEntryPoint === "cierre" ? (
+                  <div className="mt-5 flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsCloseoutOpen(false)}
+                      className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveCashCloseout}
+                      disabled={isSavingCloseout || !Number.isFinite(countedCashNumber) || countedCashNumber < 0}
+                      className="w-full rounded-2xl bg-ink px-4 py-4 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {isSavingCloseout ? "Guardando..." : "Confirmar cierre de caja"}
+                    </button>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -4730,7 +4912,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     setCloseoutEntryPoint("cierre");
                     setIsCloseoutOpen(true);
                     setCloseoutMessage(null);
-                    setIsWithdrawalFormOpen(false);
+                    setActiveCajaPanel(null);
                   }}
                   className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
                 >

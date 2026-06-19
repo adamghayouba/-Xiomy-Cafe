@@ -9,7 +9,7 @@ import {
 const closeoutSelect =
   "id, business_date, starting_cash, counted_cash, expected_cash, difference, notes, closed_by_label, cashier_label, created_at, reviewed_by_label, reviewed_at";
 const withdrawalSelect =
-  "id, business_date, amount, note, created_by_label, created_at";
+  "id, business_date, amount, scope, note, created_by_label, created_at";
 
 export async function GET(request: Request) {
   const context = await requireApiContext();

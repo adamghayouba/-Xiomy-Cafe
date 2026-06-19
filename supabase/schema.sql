@@ -167,6 +167,7 @@ create table if not exists public.cash_withdrawals (
   id uuid primary key default gen_random_uuid(),
   business_date date not null,
   amount numeric(12, 2) not null check (amount > 0),
+  scope text not null default 'shift' check (scope in ('shift', 'accumulated')),
   note text,
   created_by_user_id uuid not null references auth.users(id) on delete restrict,
   created_by_label text not null,
@@ -174,6 +175,11 @@ create table if not exists public.cash_withdrawals (
 );
 
 alter table public.client_payments add column if not exists paid_by_name text;
+alter table public.cash_withdrawals add column if not exists scope text not null default 'shift';
+alter table public.cash_withdrawals drop constraint if exists cash_withdrawals_scope_check;
+alter table public.cash_withdrawals
+  add constraint cash_withdrawals_scope_check
+  check (scope in ('shift', 'accumulated'));
 
 alter table public.profiles add column if not exists full_name text;
 alter table public.products add column if not exists description text not null default '';
@@ -1081,7 +1087,9 @@ returns table (
   repayments_received numeric,
   cash_withdrawals numeric,
   cancelled_sales numeric,
-  expected_cash numeric
+  expected_cash numeric,
+  accumulated_cash numeric,
+  total_available_cash numeric
 )
 language sql
 security definer
@@ -1135,11 +1143,26 @@ as $$
   ),
   withdrawal_totals as (
     select
-      coalesce(sum(amount), 0) as cash_withdrawals
+      coalesce(sum(case when cash_withdrawals.scope = 'shift' then amount else 0 end), 0) as cash_withdrawals
     from effective_scope
     left join public.cash_withdrawals on cash_withdrawals.created_by_user_id = effective_scope.user_id
       and cash_withdrawals.created_at >= effective_scope.effective_start_ts
       and cash_withdrawals.created_at < effective_scope.end_ts
+  ),
+  accumulated_closeout_totals as (
+    select
+      coalesce(sum(counted_cash), 0) as accumulated_closed_cash
+    from scope
+    left join public.cash_closeouts on cash_closeouts.cashier_user_id = scope.user_id
+      and cash_closeouts.created_at < scope.start_ts
+  ),
+  accumulated_withdrawal_totals as (
+    select
+      coalesce(sum(amount), 0) as accumulated_withdrawals
+    from scope
+    left join public.cash_withdrawals on cash_withdrawals.created_by_user_id = scope.user_id
+      and cash_withdrawals.scope = 'accumulated'
+      and cash_withdrawals.created_at < scope.end_ts
   )
   select
     effective_scope.business_date,
@@ -1151,8 +1174,19 @@ as $$
     payment_totals.repayments_received,
     withdrawal_totals.cash_withdrawals,
     sales_totals.cancelled_sales,
-    (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)::numeric(12, 2) as expected_cash
-  from effective_scope, sales_totals, payment_totals, withdrawal_totals;
+    (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)::numeric(12, 2) as expected_cash,
+    greatest(
+      accumulated_closeout_totals.accumulated_closed_cash - accumulated_withdrawal_totals.accumulated_withdrawals,
+      0
+    )::numeric(12, 2) as accumulated_cash,
+    (
+      (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)
+      + greatest(
+          accumulated_closeout_totals.accumulated_closed_cash - accumulated_withdrawal_totals.accumulated_withdrawals,
+          0
+        )
+    )::numeric(12, 2) as total_available_cash
+  from effective_scope, sales_totals, payment_totals, withdrawal_totals, accumulated_closeout_totals, accumulated_withdrawal_totals;
 $$;
 
 grant execute on function public.cash_closeout_snapshot(numeric) to authenticated;
@@ -1245,9 +1279,11 @@ $$;
 grant execute on function public.create_cash_closeout(numeric, numeric, text) to authenticated;
 
 drop function if exists public.create_cash_withdrawal(numeric, text);
+drop function if exists public.create_cash_withdrawal(numeric, text, text);
 
 create or replace function public.create_cash_withdrawal(
   p_amount numeric,
+  p_scope text default 'shift',
   p_note text default null
 )
 returns public.cash_withdrawals
@@ -1262,6 +1298,8 @@ declare
   v_withdrawal public.cash_withdrawals%rowtype;
   v_label text;
   v_business_date date := (timezone('America/Bogota', now()))::date;
+  v_scope text := coalesce(nullif(trim(coalesce(p_scope, '')), ''), 'shift');
+  v_available_accumulated numeric(12, 2) := 0;
 begin
   if v_user_id is null then
     raise exception 'No authenticated user for cash withdrawal.';
@@ -1281,6 +1319,20 @@ begin
     raise exception 'El monto de la salida debe ser mayor a cero.';
   end if;
 
+  if v_scope not in ('shift', 'accumulated') then
+    raise exception 'Tipo de retiro no válido.';
+  end if;
+
+  if v_scope = 'accumulated' then
+    select accumulated_cash
+    into v_available_accumulated
+    from public.cash_closeout_snapshot(0);
+
+    if p_amount > coalesce(v_available_accumulated, 0) then
+      raise exception 'El retiro no puede superar el efectivo acumulado disponible en caja.';
+    end if;
+  end if;
+
   v_label := coalesce(
     nullif(trim(coalesce(v_profile.full_name, '')), ''),
     nullif(trim(coalesce(v_profile.email, '')), ''),
@@ -1290,6 +1342,7 @@ begin
   insert into public.cash_withdrawals (
     business_date,
     amount,
+    scope,
     note,
     created_by_user_id,
     created_by_label
@@ -1297,6 +1350,7 @@ begin
   values (
     v_business_date,
     p_amount,
+    v_scope,
     nullif(trim(coalesce(p_note, '')), ''),
     v_user_id,
     v_label
@@ -1307,7 +1361,7 @@ begin
 end;
 $$;
 
-grant execute on function public.create_cash_withdrawal(numeric, text) to authenticated;
+grant execute on function public.create_cash_withdrawal(numeric, text, text) to authenticated;
 
 drop function if exists public.acknowledge_cash_closeout(uuid);
 

@@ -3,7 +3,7 @@ import { requireApiContext } from "@/lib/api-context";
 import { mapCashWithdrawalRecord } from "@/lib/pos-domain";
 
 const withdrawalSelect =
-  "id, business_date, amount, note, created_by_label, created_at";
+  "id, business_date, amount, scope, note, created_by_label, created_at";
 
 export async function POST(request: Request) {
   const context = await requireApiContext();
@@ -19,10 +19,16 @@ export async function POST(request: Request) {
   const body = await request.json();
   const amount = Number(body.amount ?? NaN);
   const note = body.note ? String(body.note) : null;
+  const scope = body.scope === "accumulated" ? "accumulated" : "shift";
 
   if (!Number.isFinite(amount) || amount <= 0) {
     return NextResponse.json(
-      { error: "Debes ingresar un monto válido para la salida de caja." },
+      {
+        error:
+          scope === "accumulated"
+            ? "Debes ingresar un monto válido para el retiro de efectivo."
+            : "Debes ingresar un monto válido para la salida de caja."
+      },
       { status: 400 }
     );
   }
@@ -31,13 +37,20 @@ export async function POST(request: Request) {
     "create_cash_withdrawal",
     {
       p_amount: amount,
+      p_scope: scope,
       p_note: note
     }
   );
 
   if (createdError) {
     return NextResponse.json(
-      { error: createdError.message ?? "No fue posible registrar la salida de caja." },
+      {
+        error:
+          createdError.message ??
+          (scope === "accumulated"
+            ? "No fue posible registrar el retiro de efectivo."
+            : "No fue posible registrar la salida de caja.")
+      },
       { status: 400 }
     );
   }
@@ -52,7 +65,13 @@ export async function POST(request: Request) {
 
   if (error) {
     return NextResponse.json(
-      { error: error.message ?? "No fue posible cargar la salida de caja guardada." },
+      {
+        error:
+          error.message ??
+          (scope === "accumulated"
+            ? "No fue posible cargar el retiro de efectivo guardado."
+            : "No fue posible cargar la salida de caja guardada.")
+      },
       { status: 400 }
     );
   }
