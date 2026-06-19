@@ -3,6 +3,7 @@
 import {
   BadgeDollarSign,
   Calculator,
+  CircleMinus,
   Download,
   FileSpreadsheet,
   PencilLine,
@@ -46,6 +47,7 @@ import {
 import type {
   CashCloseoutRecord,
   CashCloseoutSnapshot,
+  CashWithdrawalRecord,
   ClientFormState,
   ClientTabAccount,
   ClientTabAccountSummary,
@@ -79,6 +81,7 @@ type JefaSection = "ventas" | "productos" | "clientes";
 type JefaProductSection = "catalogo" | "stock";
 type JefaClientSection = "lista" | "consumo";
 type AlcoholType = "Cerveza" | "Aguardiente" | "Ron" | "Whisky" | "Otros";
+type CloseoutEntryPoint = "caja" | "cierre";
 type AlcoholPresentation =
   | "Shot"
   | "Vaso"
@@ -260,6 +263,11 @@ export function PosApp({ initialData }: PosAppProps) {
   const [closeoutNotes, setCloseoutNotes] = useState("");
   const [closeoutSnapshot, setCloseoutSnapshot] = useState<CashCloseoutSnapshot | null>(null);
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
+  const [closeoutEntryPoint, setCloseoutEntryPoint] = useState<CloseoutEntryPoint>("caja");
+  const [cashWithdrawals, setCashWithdrawals] = useState<CashWithdrawalRecord[]>([]);
+  const [isWithdrawalFormOpen, setIsWithdrawalFormOpen] = useState(false);
+  const [withdrawalAmount, setWithdrawalAmount] = useState("");
+  const [withdrawalNote, setWithdrawalNote] = useState("");
   const [isDailySalesOpen, setIsDailySalesOpen] = useState(false);
   const [dailySalesHistory, setDailySalesHistory] = useState<ClientTransactionEntry[]>([]);
   const [dailySalesRange, setDailySalesRange] = useState<{
@@ -284,6 +292,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const [isLoadingCloseout, startCloseoutTransition] = useTransition();
   const [isSavingCloseout, startCloseoutSaveTransition] = useTransition();
   const [isAcknowledgingCloseout, startCloseoutAcknowledgeTransition] = useTransition();
+  const [isSavingWithdrawal, startWithdrawalTransition] = useTransition();
   const [isLoadingDailySales, startDailySalesTransition] = useTransition();
   const productNameInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -474,6 +483,7 @@ export function PosApp({ initialData }: PosAppProps) {
   const paymentAmountNumber = Number(paymentAmount);
   const cashReceivedNumber = Number(cashReceived);
   const countedCashNumber = Number(countedCash);
+  const withdrawalAmountNumber = Number(withdrawalAmount);
   const outOfStockCount = useMemo(
     () => stockTrackedProducts.filter((product) => isProductOutOfStock(product)).length,
     [stockTrackedProducts]
@@ -1393,6 +1403,43 @@ export function PosApp({ initialData }: PosAppProps) {
 
       setCloseoutSnapshot(result.snapshot as CashCloseoutSnapshot);
       setCloseoutHistory((result.history ?? []) as CashCloseoutRecord[]);
+      setCashWithdrawals((result.withdrawals ?? []) as CashWithdrawalRecord[]);
+    });
+  }
+
+  function saveCashWithdrawal() {
+    if (!can("cash.closeout")) {
+      return;
+    }
+
+    if (!Number.isFinite(withdrawalAmountNumber) || withdrawalAmountNumber <= 0) {
+      setCloseoutMessage("Ingresa un monto válido para la salida de caja.");
+      return;
+    }
+
+    startWithdrawalTransition(async () => {
+      const response = await fetch("/api/cash-withdrawals", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          amount: withdrawalAmountNumber,
+          note: withdrawalNote
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        setCloseoutMessage(result.error ?? "No fue posible registrar la salida de caja.");
+        return;
+      }
+
+      setCloseoutMessage("Salida de caja registrada.");
+      setWithdrawalAmount("");
+      setWithdrawalNote("");
+      setIsWithdrawalFormOpen(false);
+      loadCloseoutData();
     });
   }
 
@@ -1474,6 +1521,9 @@ export function PosApp({ initialData }: PosAppProps) {
       setIsCloseoutOpen(false);
       setCountedCash("");
       setCloseoutNotes("");
+      setIsWithdrawalFormOpen(false);
+      setWithdrawalAmount("");
+      setWithdrawalNote("");
     });
   }
 
@@ -1631,6 +1681,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   <button
                     type="button"
                     onClick={() => {
+                      setCloseoutEntryPoint("caja");
                       setIsCloseoutOpen(true);
                       setCloseoutMessage(null);
                     }}
@@ -2331,48 +2382,90 @@ export function PosApp({ initialData }: PosAppProps) {
                   </div>
 
                   {can("cash.closeout.review") ? (
-                    <div className="mt-6 rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold">Historial de cierres de caja</p>
-                        <span className="text-xs subtle">
-                          {closeoutHistory.length} registro{closeoutHistory.length === 1 ? "" : "s"}
-                        </span>
-                      </div>
-                      <div className="mt-4 space-y-3">
-                        {closeoutHistory.length ? (
-                          closeoutHistory.map((closeout) => (
-                            <div
-                              key={closeout.id}
-                              className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
-                            >
-                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                  <p className="font-semibold">
-                                    {closeout.cashierLabel} · {closeout.businessDate.split("-").reverse().join("/")}
-                                  </p>
-                                  <p className="mt-1 subtle">
-                                    Esperado: {formatCop(closeout.expectedCash)} · Contado: {formatCop(closeout.countedCash)}
-                                  </p>
-                                  <p className="mt-1 subtle">
-                                    Diferencia: {formatCop(closeout.difference)}
-                                  </p>
-                                  {closeout.reviewedAt ? (
-                                    <p className="mt-1 subtle">
-                                      Revisado por {closeout.reviewedByLabel ?? "Jefa"} · {formatSaleTime(closeout.reviewedAt)}
+                    <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)]">
+                      <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold">Historial de cierres de caja</p>
+                          <span className="text-xs subtle">
+                            {closeoutHistory.length} registro{closeoutHistory.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                          {closeoutHistory.length ? (
+                            closeoutHistory.map((closeout) => (
+                              <div
+                                key={closeout.id}
+                                className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                              >
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="font-semibold">
+                                      {closeout.cashierLabel} · {closeout.businessDate.split("-").reverse().join("/")}
                                     </p>
-                                  ) : null}
+                                    <p className="mt-1 subtle">
+                                      Esperado: {formatCop(closeout.expectedCash)} · Contado: {formatCop(closeout.countedCash)}
+                                    </p>
+                                    <p className="mt-1 subtle">
+                                      Diferencia: {formatCop(closeout.difference)}
+                                    </p>
+                                    {closeout.reviewedAt ? (
+                                      <p className="mt-1 subtle">
+                                        Revisado por {closeout.reviewedByLabel ?? "Jefa"} · {formatSaleTime(closeout.reviewedAt)}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                  <span className="text-xs subtle">
+                                    {formatSaleTime(closeout.createdAt)}
+                                  </span>
                                 </div>
-                                <span className="text-xs subtle">
-                                  {formatSaleTime(closeout.createdAt)}
-                                </span>
                               </div>
+                            ))
+                          ) : (
+                            <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                              Aún no hay cierres de caja registrados.
                             </div>
-                          ))
-                        ) : (
-                          <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
-                            Aún no hay cierres de caja registrados.
-                          </div>
-                        )}
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold">Salidas de caja</p>
+                          <span className="text-xs subtle">
+                            {cashWithdrawals.length} registro{cashWithdrawals.length === 1 ? "" : "s"}
+                          </span>
+                        </div>
+                        <div className="mt-4 space-y-3">
+                          {cashWithdrawals.length ? (
+                            cashWithdrawals.map((withdrawal) => (
+                              <div
+                                key={withdrawal.id}
+                                className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                              >
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <p className="font-semibold">
+                                      {formatCop(withdrawal.amount)}
+                                    </p>
+                                    <p className="mt-1 subtle">
+                                      {withdrawal.createdByLabel} · {withdrawal.businessDate.split("-").reverse().join("/")}
+                                    </p>
+                                    {withdrawal.note ? (
+                                      <p className="mt-1 subtle">Nota: {withdrawal.note}</p>
+                                    ) : null}
+                                  </div>
+                                  <span className="text-xs subtle">
+                                    {formatSaleTime(withdrawal.createdAt)}
+                                  </span>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                              Aún no hay salidas de caja registradas.
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -2974,21 +3067,112 @@ export function PosApp({ initialData }: PosAppProps) {
           {isCloseoutOpen ? (
             <div className="fixed inset-0 z-50 flex items-end bg-[var(--background)] sm:items-center sm:justify-center">
               <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-[var(--surface)] p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-3xl sm:rounded-[2rem] sm:p-6">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <p className="text-lg font-semibold">Cierre de caja</p>
                     <p className="mt-1 text-sm subtle">
                       Revisa el resumen, cuenta el efectivo y confirma el cierre en un segundo paso.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsCloseoutOpen(false)}
-                    className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+                  <div className="flex items-center gap-2 self-start">
+                    {closeoutEntryPoint === "caja" ? (
+                      <button
+                        type="button"
+                        onClick={() => setIsWithdrawalFormOpen((current) => !current)}
+                        className={`rounded-2xl px-4 py-3 text-sm font-semibold ring-1 transition ${
+                          isWithdrawalFormOpen
+                            ? "bg-rose-100 text-rose-700 ring-rose-200"
+                            : "bg-rose-50 text-rose-700 ring-rose-200 hover:bg-rose-100"
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          <CircleMinus className="h-4 w-4" />
+                          Salida de caja
+                        </span>
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCloseoutOpen(false);
+                        setIsWithdrawalFormOpen(false);
+                      }}
+                      className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
+
+                {closeoutEntryPoint === "caja" && isWithdrawalFormOpen ? (
+                  <div className="mt-5 rounded-3xl bg-rose-50 p-4 ring-1 ring-rose-200 sm:p-5">
+                    <div className="flex flex-col gap-4">
+                      <div>
+                        <p className="text-sm font-semibold text-rose-700">
+                          Registrar salida de caja
+                        </p>
+                        <p className="mt-1 text-sm text-rose-700">
+                          Usa esto cuando salga efectivo autorizado para una compra pequeña del día.
+                        </p>
+                        <p className="mt-2 text-xs font-medium uppercase tracking-[0.14em] text-rose-600">
+                          Resta efectivo del esperado
+                        </p>
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Monto</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="100"
+                            value={withdrawalAmount}
+                            onChange={(event) => setWithdrawalAmount(event.target.value)}
+                            placeholder="Ej. 10000"
+                            className="rounded-2xl border border-rose-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-rose-400"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-sm font-medium">Nota opcional</span>
+                          <input
+                            type="text"
+                            value={withdrawalNote}
+                            onChange={(event) => setWithdrawalNote(event.target.value)}
+                            placeholder="Ej. compra urgente de gaseosas"
+                            className="rounded-2xl border border-rose-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-rose-400"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="flex gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsWithdrawalFormOpen(false);
+                            setWithdrawalAmount("");
+                            setWithdrawalNote("");
+                          }}
+                          className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={saveCashWithdrawal}
+                          disabled={
+                            isSavingWithdrawal ||
+                            !Number.isFinite(withdrawalAmountNumber) ||
+                            withdrawalAmountNumber <= 0
+                          }
+                          className="w-full rounded-2xl bg-rose-600 px-4 py-4 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-rose-200 disabled:text-rose-500 disabled:opacity-100"
+                        >
+                          {isSavingWithdrawal ? "Guardando..." : "Guardar salida"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="mt-5 grid gap-4 sm:grid-cols-1">
                   <label className="grid gap-2">
@@ -3025,7 +3209,46 @@ export function PosApp({ initialData }: PosAppProps) {
                     <MetricTile label="Fiados generados" value={formatCop(closeoutSnapshot.fiadoGenerated)} />
                     <MetricTile label="Consumo familiar" value={formatCop(closeoutSnapshot.familyConsumption)} />
                     <MetricTile label="Abonos recibidos" value={formatCop(closeoutSnapshot.repaymentsReceived)} />
+                    <MetricTile label="Salidas de caja" value={formatCop(closeoutSnapshot.cashWithdrawals)} />
                     <MetricTile label="Ventas anuladas" value={formatCop(closeoutSnapshot.cancelledSales)} />
+                    </div>
+
+                    <div className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-semibold">Historial de salidas</p>
+                        <span className="text-xs subtle">
+                          {cashWithdrawals.length} registro{cashWithdrawals.length === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="mt-4 space-y-3">
+                        {cashWithdrawals.length ? (
+                          cashWithdrawals.map((withdrawal) => (
+                            <div
+                              key={withdrawal.id}
+                              className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                            >
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                  <p className="font-semibold">{formatCop(withdrawal.amount)}</p>
+                                  <p className="mt-1 subtle">
+                                    {withdrawal.createdByLabel}
+                                  </p>
+                                  {withdrawal.note ? (
+                                    <p className="mt-1 subtle">Nota: {withdrawal.note}</p>
+                                  ) : null}
+                                </div>
+                                <span className="text-xs subtle">
+                                  {formatSaleTime(withdrawal.createdAt)}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                            Aún no hay salidas de caja registradas.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ) : !isLoadingCloseout ? (
@@ -4501,14 +4724,16 @@ export function PosApp({ initialData }: PosAppProps) {
 
           {can("cash.closeout") ? (
             <div className="mt-6 border-t border-[var(--border)] pt-5">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsCloseoutOpen(true);
-                  setCloseoutMessage(null);
-                }}
-                className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
-              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCloseoutEntryPoint("cierre");
+                    setIsCloseoutOpen(true);
+                    setCloseoutMessage(null);
+                    setIsWithdrawalFormOpen(false);
+                  }}
+                  className="w-full rounded-2xl bg-white px-4 py-4 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                >
                 Cierre de caja
               </button>
             </div>

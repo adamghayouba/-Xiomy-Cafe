@@ -206,8 +206,18 @@ export type CashCloseoutSnapshot = {
   fiadoGenerated: number;
   familyConsumption: number;
   repaymentsReceived: number;
+  cashWithdrawals: number;
   cancelledSales: number;
   expectedCash: number;
+};
+
+export type CashWithdrawalRecord = {
+  id: string;
+  businessDate: string;
+  amount: number;
+  note: string | null;
+  createdByLabel: string;
+  createdAt: string;
 };
 
 export type CashCloseoutRecord = {

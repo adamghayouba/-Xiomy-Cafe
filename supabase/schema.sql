@@ -163,6 +163,16 @@ create table if not exists public.cash_closeouts (
   created_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists public.cash_withdrawals (
+  id uuid primary key default gen_random_uuid(),
+  business_date date not null,
+  amount numeric(12, 2) not null check (amount > 0),
+  note text,
+  created_by_user_id uuid not null references auth.users(id) on delete restrict,
+  created_by_label text not null,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
 alter table public.client_payments add column if not exists paid_by_name text;
 
 alter table public.profiles add column if not exists full_name text;
@@ -242,6 +252,7 @@ create index if not exists idx_sale_cancellation_requests_sale on public.sale_ca
 create index if not exists idx_sale_cancellation_requests_status on public.sale_cancellation_requests(status, requested_at desc);
 create unique index if not exists idx_sale_cancellation_requests_pending_unique on public.sale_cancellation_requests(sale_id) where status = 'pending';
 create index if not exists idx_cash_closeouts_cashier_date on public.cash_closeouts(cashier_user_id, business_date desc);
+create index if not exists idx_cash_withdrawals_creator_date on public.cash_withdrawals(created_by_user_id, business_date desc);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -313,6 +324,7 @@ alter table public.sale_items enable row level security;
 alter table public.client_payments enable row level security;
 alter table public.sale_cancellation_requests enable row level security;
 alter table public.cash_closeouts enable row level security;
+alter table public.cash_withdrawals enable row level security;
 
 drop policy if exists "profiles_self_select" on public.profiles;
 create policy "profiles_self_select"
@@ -518,6 +530,33 @@ to authenticated
 using (
   public.current_user_role() = 'cajero'
   and cashier_user_id = auth.uid()
+);
+
+drop policy if exists "cash_withdrawals_select_for_jefa" on public.cash_withdrawals;
+drop policy if exists "cash_withdrawals_select_own" on public.cash_withdrawals;
+create policy "cash_withdrawals_select_for_jefa"
+on public.cash_withdrawals
+for select
+to authenticated
+using (public.current_user_role() = 'jefa');
+
+create policy "cash_withdrawals_select_own"
+on public.cash_withdrawals
+for select
+to authenticated
+using (
+  public.current_user_role() = 'cajero'
+  and created_by_user_id = auth.uid()
+);
+
+drop policy if exists "cash_withdrawals_insert_for_pos_staff" on public.cash_withdrawals;
+create policy "cash_withdrawals_insert_for_pos_staff"
+on public.cash_withdrawals
+for insert
+to authenticated
+with check (
+  public.current_user_role() in ('jefa', 'cajero')
+  and created_by_user_id = auth.uid()
 );
 
 drop function if exists public.create_sale(public.payment_method, jsonb);
@@ -1040,6 +1079,7 @@ returns table (
   fiado_generated numeric,
   family_consumption numeric,
   repayments_received numeric,
+  cash_withdrawals numeric,
   cancelled_sales numeric,
   expected_cash numeric
 )
@@ -1092,6 +1132,14 @@ as $$
     left join public.client_payments on client_payments.created_by_user_id = effective_scope.user_id
       and client_payments.created_at >= effective_scope.effective_start_ts
       and client_payments.created_at < effective_scope.end_ts
+  ),
+  withdrawal_totals as (
+    select
+      coalesce(sum(amount), 0) as cash_withdrawals
+    from effective_scope
+    left join public.cash_withdrawals on cash_withdrawals.created_by_user_id = effective_scope.user_id
+      and cash_withdrawals.created_at >= effective_scope.effective_start_ts
+      and cash_withdrawals.created_at < effective_scope.end_ts
   )
   select
     effective_scope.business_date,
@@ -1101,9 +1149,10 @@ as $$
     sales_totals.fiado_generated,
     sales_totals.family_consumption,
     payment_totals.repayments_received,
+    withdrawal_totals.cash_withdrawals,
     sales_totals.cancelled_sales,
-    (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash)::numeric(12, 2) as expected_cash
-  from effective_scope, sales_totals, payment_totals;
+    (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)::numeric(12, 2) as expected_cash
+  from effective_scope, sales_totals, payment_totals, withdrawal_totals;
 $$;
 
 grant execute on function public.cash_closeout_snapshot(numeric) to authenticated;
@@ -1194,6 +1243,71 @@ end;
 $$;
 
 grant execute on function public.create_cash_closeout(numeric, numeric, text) to authenticated;
+
+drop function if exists public.create_cash_withdrawal(numeric, text);
+
+create or replace function public.create_cash_withdrawal(
+  p_amount numeric,
+  p_note text default null
+)
+returns public.cash_withdrawals
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role public.pos_role;
+  v_profile public.profiles%rowtype;
+  v_withdrawal public.cash_withdrawals%rowtype;
+  v_label text;
+  v_business_date date := (timezone('America/Bogota', now()))::date;
+begin
+  if v_user_id is null then
+    raise exception 'No authenticated user for cash withdrawal.';
+  end if;
+
+  select * into v_profile
+  from public.profiles
+  where id = v_user_id;
+
+  v_role := v_profile.role;
+
+  if v_role not in ('jefa', 'cajero') then
+    raise exception 'User does not have POS permissions.';
+  end if;
+
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'El monto de la salida debe ser mayor a cero.';
+  end if;
+
+  v_label := coalesce(
+    nullif(trim(coalesce(v_profile.full_name, '')), ''),
+    nullif(trim(coalesce(v_profile.email, '')), ''),
+    'Caja'
+  );
+
+  insert into public.cash_withdrawals (
+    business_date,
+    amount,
+    note,
+    created_by_user_id,
+    created_by_label
+  )
+  values (
+    v_business_date,
+    p_amount,
+    nullif(trim(coalesce(p_note, '')), ''),
+    v_user_id,
+    v_label
+  )
+  returning * into v_withdrawal;
+
+  return v_withdrawal;
+end;
+$$;
+
+grant execute on function public.create_cash_withdrawal(numeric, text) to authenticated;
 
 drop function if exists public.acknowledge_cash_closeout(uuid);
 

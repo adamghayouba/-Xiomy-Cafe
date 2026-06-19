@@ -2,11 +2,14 @@ import { NextResponse } from "next/server";
 import { requireApiContext } from "@/lib/api-context";
 import {
   mapCashCloseoutRecord,
-  mapCashCloseoutSnapshotRecord
+  mapCashCloseoutSnapshotRecord,
+  mapCashWithdrawalRecord
 } from "@/lib/pos-domain";
 
 const closeoutSelect =
   "id, business_date, starting_cash, counted_cash, expected_cash, difference, notes, closed_by_label, cashier_label, created_at, reviewed_by_label, reviewed_at";
+const withdrawalSelect =
+  "id, business_date, amount, note, created_by_label, created_at";
 
 export async function GET(request: Request) {
   const context = await requireApiContext();
@@ -23,7 +26,13 @@ export async function GET(request: Request) {
   const startingCash = Number(url.searchParams.get("startingCash") ?? 0);
   const safeStartingCash = Number.isFinite(startingCash) ? startingCash : 0;
 
-  const [snapshotResult, historyResult] = await Promise.all([
+  const withdrawalsQuery = context.supabase
+    .from("cash_withdrawals")
+    .select(withdrawalSelect)
+    .order("created_at", { ascending: false })
+    .limit(context.permissions["cash.closeout.review"] ? 20 : 10);
+
+  const [snapshotResult, historyResult, withdrawalsResult] = await Promise.all([
     context.supabase.rpc("cash_closeout_snapshot", {
       p_starting_cash: safeStartingCash
     }),
@@ -31,7 +40,8 @@ export async function GET(request: Request) {
       .from("cash_closeouts")
       .select(closeoutSelect)
       .order("created_at", { ascending: false })
-      .limit(context.permissions["cash.closeout.review"] ? 20 : 5)
+      .limit(context.permissions["cash.closeout.review"] ? 20 : 5),
+    withdrawalsQuery
   ]);
 
   if (snapshotResult.error) {
@@ -48,6 +58,13 @@ export async function GET(request: Request) {
     );
   }
 
+  if (withdrawalsResult.error) {
+    return NextResponse.json(
+      { error: withdrawalsResult.error.message ?? "No fue posible cargar las salidas de caja." },
+      { status: 400 }
+    );
+  }
+
   const snapshot = mapCashCloseoutSnapshotRecord(
     Array.isArray(snapshotResult.data) ? snapshotResult.data[0] : snapshotResult.data
   );
@@ -56,6 +73,9 @@ export async function GET(request: Request) {
     snapshot,
     history: (historyResult.data ?? []).map((row) =>
       mapCashCloseoutRecord(row as Record<string, unknown>)
+    ),
+    withdrawals: (withdrawalsResult.data ?? []).map((row) =>
+      mapCashWithdrawalRecord(row as Record<string, unknown>)
     )
   });
 }

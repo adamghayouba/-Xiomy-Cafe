@@ -8,6 +8,7 @@ import { isPosRole, type PosRole } from "@/lib/pos-permissions";
 import type {
   CashCloseoutRecord,
   CashCloseoutSnapshot,
+  CashWithdrawalRecord,
   ClientPaymentEntry,
   ClientReportPeriod,
   ClientFormState,
@@ -389,8 +390,20 @@ export function mapCashCloseoutSnapshotRecord(
     fiadoGenerated: Number(record?.fiado_generated ?? 0),
     familyConsumption: Number(record?.family_consumption ?? 0),
     repaymentsReceived: Number(record?.repayments_received ?? 0),
+    cashWithdrawals: Number(record?.cash_withdrawals ?? 0),
     cancelledSales: Number(record?.cancelled_sales ?? 0),
     expectedCash: Number(record?.expected_cash ?? 0)
+  };
+}
+
+export function mapCashWithdrawalRecord(record: Record<string, unknown>): CashWithdrawalRecord {
+  return {
+    id: String(record.id ?? ""),
+    businessDate: String(record.business_date ?? ""),
+    amount: Number(record.amount ?? 0),
+    note: record.note ? String(record.note) : null,
+    createdByLabel: String(record.created_by_label ?? "Caja"),
+    createdAt: String(record.created_at ?? "")
   };
 }
 
