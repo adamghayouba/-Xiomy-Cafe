@@ -1072,6 +1072,38 @@ $$;
 
 grant execute on function public.resolve_sale_cancellation_request(uuid, boolean, text) to authenticated;
 
+drop function if exists public.historical_cash_in_box(uuid, date);
+
+create or replace function public.historical_cash_in_box(
+  p_cashier_user_id uuid default auth.uid(),
+  p_business_date date default (timezone('America/Bogota', now()))::date
+)
+returns numeric
+language sql
+security definer
+set search_path = public
+as $$
+  with closeout_totals as (
+    select coalesce(sum(counted_cash), 0) as closed_cash
+    from public.cash_closeouts
+    where cashier_user_id = p_cashier_user_id
+      and business_date < p_business_date
+  ),
+  withdrawal_totals as (
+    select coalesce(sum(amount), 0) as withdrawn_cash
+    from public.cash_withdrawals
+    where created_by_user_id = p_cashier_user_id
+      and scope = 'accumulated'
+      and business_date < p_business_date
+  )
+  select greatest(
+    (select closed_cash from closeout_totals) - (select withdrawn_cash from withdrawal_totals),
+    0
+  )::numeric(12, 2);
+$$;
+
+grant execute on function public.historical_cash_in_box(uuid, date) to authenticated;
+
 drop function if exists public.cash_closeout_snapshot(numeric);
 
 create or replace function public.cash_closeout_snapshot(
@@ -1149,20 +1181,10 @@ as $$
       and cash_withdrawals.created_at >= effective_scope.effective_start_ts
       and cash_withdrawals.created_at < effective_scope.end_ts
   ),
-  accumulated_closeout_totals as (
+  accumulated_totals as (
     select
-      coalesce(sum(counted_cash), 0) as accumulated_closed_cash
+      public.historical_cash_in_box(scope.user_id, scope.business_date) as accumulated_cash
     from scope
-    left join public.cash_closeouts on cash_closeouts.cashier_user_id = scope.user_id
-      and cash_closeouts.created_at < scope.start_ts
-  ),
-  accumulated_withdrawal_totals as (
-    select
-      coalesce(sum(amount), 0) as accumulated_withdrawals
-    from scope
-    left join public.cash_withdrawals on cash_withdrawals.created_by_user_id = scope.user_id
-      and cash_withdrawals.scope = 'accumulated'
-      and cash_withdrawals.created_at < scope.end_ts
   )
   select
     effective_scope.business_date,
@@ -1175,18 +1197,12 @@ as $$
     withdrawal_totals.cash_withdrawals,
     sales_totals.cancelled_sales,
     (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)::numeric(12, 2) as expected_cash,
-    greatest(
-      accumulated_closeout_totals.accumulated_closed_cash - accumulated_withdrawal_totals.accumulated_withdrawals,
-      0
-    )::numeric(12, 2) as accumulated_cash,
+    accumulated_totals.accumulated_cash,
     (
       (coalesce(p_starting_cash, 0) + sales_totals.cash_sales + payment_totals.repayments_cash - withdrawal_totals.cash_withdrawals)
-      + greatest(
-          accumulated_closeout_totals.accumulated_closed_cash - accumulated_withdrawal_totals.accumulated_withdrawals,
-          0
-        )
+      + accumulated_totals.accumulated_cash
     )::numeric(12, 2) as total_available_cash
-  from effective_scope, sales_totals, payment_totals, withdrawal_totals, accumulated_closeout_totals, accumulated_withdrawal_totals;
+  from effective_scope, sales_totals, payment_totals, withdrawal_totals, accumulated_totals;
 $$;
 
 grant execute on function public.cash_closeout_snapshot(numeric) to authenticated;

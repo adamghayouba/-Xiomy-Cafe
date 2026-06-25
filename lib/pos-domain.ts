@@ -602,8 +602,10 @@ export function buildClientTabAccountSummary(account: ClientTabAccount): ClientT
 export function buildSalesReport(params: {
   sales: ClientTransactionEntry[];
   payments: ClientPaymentEntry[];
+  cashWithdrawals: CashWithdrawalRecord[];
   allFiadoSales: ClientTransactionEntry[];
   allFiadoPayments: ClientPaymentEntry[];
+  accumulatedCashInBox: number;
   period: SalesReportPeriod;
   startDate: string | null;
   endDate: string | null;
@@ -620,6 +622,10 @@ export function buildSalesReport(params: {
   const discountTotal = activeSales.reduce((total, sale) => total + sale.discountTotal, 0);
   const salesCollected = activeSales.reduce((total, sale) => total + sale.netTotal, 0);
   const repaymentsTotal = params.payments.reduce((total, payment) => total + payment.amount, 0);
+  const cashWithdrawalsTotal = params.cashWithdrawals.reduce(
+    (total, withdrawal) => total + withdrawal.amount,
+    0
+  );
   const netCollected = salesCollected + repaymentsTotal;
   const transactionsCount = activeSales.length;
   const productsSoldCount = activeSales.reduce((total, sale) => total + sale.itemsCount, 0);
@@ -724,9 +730,11 @@ export function buildSalesReport(params: {
     period: params.period,
     startDate: params.startDate,
     endDate: params.endDate,
+    accumulatedCashInBox: params.accumulatedCashInBox,
     grossSales,
     netCollected,
     discountTotal,
+    cashWithdrawalsTotal,
     outstandingFiado: totalOutstandingFiado,
     transactionsCount,
     productsSoldCount,

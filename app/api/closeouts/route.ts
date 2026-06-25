@@ -5,6 +5,7 @@ import {
   mapCashCloseoutSnapshotRecord,
   mapCashWithdrawalRecord
 } from "@/lib/pos-domain";
+import { getAccumulatedCashInBox } from "@/lib/cash-drawer";
 
 const closeoutSelect =
   "id, business_date, starting_cash, counted_cash, expected_cash, difference, notes, closed_by_label, cashier_label, created_at, reviewed_by_label, reviewed_at";
@@ -68,6 +69,11 @@ export async function GET(request: Request) {
   const snapshot = mapCashCloseoutSnapshotRecord(
     Array.isArray(snapshotResult.data) ? snapshotResult.data[0] : snapshotResult.data
   );
+  snapshot.accumulatedCash = await getAccumulatedCashInBox(
+    context.supabase,
+    context.profile.id
+  );
+  snapshot.totalAvailableCash = snapshot.expectedCash + snapshot.accumulatedCash;
 
   return NextResponse.json({
     snapshot,
@@ -141,11 +147,18 @@ export async function POST(request: Request) {
     );
   }
 
+  const snapshot = mapCashCloseoutSnapshotRecord(
+    Array.isArray(snapshotResult.data) ? snapshotResult.data[0] : snapshotResult.data
+  );
+  snapshot.accumulatedCash = await getAccumulatedCashInBox(
+    context.supabase,
+    context.profile.id
+  );
+  snapshot.totalAvailableCash = snapshot.expectedCash + snapshot.accumulatedCash;
+
   return NextResponse.json({
     closeout: mapCashCloseoutRecord(closeoutResult.data as Record<string, unknown>),
-    snapshot: mapCashCloseoutSnapshotRecord(
-      Array.isArray(snapshotResult.data) ? snapshotResult.data[0] : snapshotResult.data
-    )
+    snapshot
   });
 }
 

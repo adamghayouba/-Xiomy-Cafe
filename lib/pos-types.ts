@@ -181,9 +181,11 @@ export type SalesReport = {
   period: SalesReportPeriod;
   startDate: string | null;
   endDate: string | null;
+  accumulatedCashInBox: number;
   grossSales: number;
   netCollected: number;
   discountTotal: number;
+  cashWithdrawalsTotal: number;
   outstandingFiado: number;
   transactionsCount: number;
   productsSoldCount: number;

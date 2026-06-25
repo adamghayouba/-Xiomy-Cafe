@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server";
 import {
   buildSalesReport,
+  mapCashWithdrawalRecord,
   mapClientPaymentRecord,
   mapClientTransactionRecord
 } from "@/lib/pos-domain";
 import type { SalesReportPeriod } from "@/lib/pos-types";
 import { requireApiContext } from "@/lib/api-context";
 import { getBogotaCustomRange, getBogotaSalesRange } from "@/lib/pos-utils";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
+import { getAccumulatedCashInBox, getActiveCashierDrawerUserId } from "@/lib/cash-drawer";
 
 function isSalesReportPeriod(value: string): value is SalesReportPeriod {
   return value === "day" || value === "week" || value === "month" || value === "year" || value === "custom";
@@ -47,7 +50,13 @@ export async function GET(request: Request) {
       ? getBogotaCustomRange(startDate, endDate)
       : getBogotaSalesRange(periodValue === "custom" ? "day" : periodValue);
 
-  const [salesResult, paymentsResult, allFiadoSalesResult, allFiadoPaymentsResult] =
+  const activeCashierUserId = await getActiveCashierDrawerUserId();
+  const accumulatedCashInBox =
+    activeCashierUserId
+      ? await getAccumulatedCashInBox(createAdminSupabaseClient(), activeCashierUserId)
+      : 0;
+
+  const [salesResult, paymentsResult, withdrawalsResult, allFiadoSalesResult, allFiadoPaymentsResult] =
     await Promise.all([
       context.supabase
         .from("sales")
@@ -58,6 +67,12 @@ export async function GET(request: Request) {
       context.supabase
         .from("client_payments")
         .select("id, client_id, amount, payment_method, paid_by_name, notes, created_at")
+        .gte("created_at", range.startIso)
+        .lt("created_at", range.endIso)
+        .order("created_at", { ascending: false }),
+      context.supabase
+        .from("cash_withdrawals")
+        .select("id, business_date, amount, scope, note, created_by_label, created_at")
         .gte("created_at", range.startIso)
         .lt("created_at", range.endIso)
         .order("created_at", { ascending: false }),
@@ -86,6 +101,13 @@ export async function GET(request: Request) {
     );
   }
 
+  if (withdrawalsResult.error) {
+    return NextResponse.json(
+      { error: withdrawalsResult.error.message ?? "No fue posible cargar retiros de efectivo." },
+      { status: 400 }
+    );
+  }
+
   if (allFiadoSalesResult.error) {
     return NextResponse.json(
       { error: allFiadoSalesResult.error.message ?? "No fue posible cargar cuentas pendientes." },
@@ -107,12 +129,16 @@ export async function GET(request: Request) {
     payments: (paymentsResult.data ?? []).map((row) =>
       mapClientPaymentRecord(row as Record<string, unknown>)
     ),
+    cashWithdrawals: (withdrawalsResult.data ?? []).map((row) =>
+      mapCashWithdrawalRecord(row as Record<string, unknown>)
+    ),
     allFiadoSales: (allFiadoSalesResult.data ?? []).map((row) =>
       mapClientTransactionRecord(row as Record<string, unknown>)
     ),
     allFiadoPayments: (allFiadoPaymentsResult.data ?? []).map((row) =>
       mapClientPaymentRecord(row as Record<string, unknown>)
     ),
+    accumulatedCashInBox,
     period: periodValue,
     startDate,
     endDate

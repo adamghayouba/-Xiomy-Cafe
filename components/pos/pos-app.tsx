@@ -2255,8 +2255,16 @@ export function PosApp({ initialData }: PosAppProps) {
                   <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <MetricTile label="Ventas totales" value={formatCop(salesReport.grossSales)} />
                     <MetricTile label="Cobrado" value={formatCop(salesReport.netCollected)} />
-                    <MetricTile label="Descuentos" value={formatCop(salesReport.discountTotal)} />
                     <MetricTile label="Cuentas pendientes" value={formatCop(salesReport.outstandingFiado)} />
+                    <MetricTile
+                      label="Efectivo acumulado en caja"
+                      value={formatCop(salesReport.accumulatedCashInBox)}
+                    />
+                    <MetricTile
+                      label="Total retiros de efectivo"
+                      value={formatCop(salesReport.cashWithdrawalsTotal)}
+                    />
+                    <MetricTile label="Descuentos" value={formatCop(salesReport.discountTotal)} />
                     <MetricTile label="Número de transacciones" value={`${salesReport.transactionsCount}`} />
                     <MetricTile label="Productos vendidos" value={`${salesReport.productsSoldCount}`} />
                   </div>
