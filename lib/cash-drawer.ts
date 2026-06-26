@@ -7,6 +7,21 @@ type SupabaseLike = {
   };
 };
 
+export async function getCashierProfileIds(
+  supabase: SupabaseLike = createAdminSupabaseClient()
+) {
+  const { data: cashierProfiles, error: profilesError } = await supabase
+    .from("profiles")
+    .select("id")
+    .eq("role", "cajero");
+
+  if (profilesError) {
+    throw new Error(profilesError.message ?? "No fue posible cargar las cajeras.");
+  }
+
+  return (cashierProfiles ?? []).map((profile: { id: string }) => String(profile.id));
+}
+
 export async function getAccumulatedCashInBox(
   supabase: SupabaseLike,
   cashierUserId: string,
@@ -44,21 +59,51 @@ export async function getAccumulatedCashInBox(
   return Math.max(previousClosedDayCash - previousDayWithdrawals, 0);
 }
 
+export async function getSharedAccumulatedCashInBox(referenceDate = getTodayKey()) {
+  const adminSupabase = createAdminSupabaseClient();
+  const cashierIds = await getCashierProfileIds(adminSupabase);
+
+  if (!cashierIds.length) {
+    return 0;
+  }
+
+  const [closeoutsResult, withdrawalsResult] = await Promise.all([
+    adminSupabase
+      .from("cash_closeouts")
+      .select("counted_cash")
+      .in("cashier_user_id", cashierIds)
+      .lt("business_date", referenceDate),
+    adminSupabase
+      .from("cash_withdrawals")
+      .select("amount")
+      .in("created_by_user_id", cashierIds)
+      .eq("scope", "accumulated")
+      .lt("business_date", referenceDate)
+  ]);
+
+  const errors = [closeoutsResult.error, withdrawalsResult.error].filter(Boolean);
+
+  if (errors.length) {
+    throw new Error(errors[0]?.message ?? "No fue posible calcular el efectivo acumulado en caja.");
+  }
+
+  const previousClosedDayCash = (closeoutsResult.data ?? []).reduce(
+    (total: number, row: Record<string, unknown>) => total + Number(row.counted_cash ?? 0),
+    0
+  );
+  const previousDayWithdrawals = (withdrawalsResult.data ?? []).reduce(
+    (total: number, row: Record<string, unknown>) => total + Number(row.amount ?? 0),
+    0
+  );
+
+  return Math.max(previousClosedDayCash - previousDayWithdrawals, 0);
+}
+
 export async function getActiveCashierDrawerUserId() {
   const adminSupabase = createAdminSupabaseClient();
   const todayKey = getTodayKey();
   const dayRange = getBogotaDayRange();
-
-  const { data: cashierProfiles, error: profilesError } = await adminSupabase
-    .from("profiles")
-    .select("id")
-    .eq("role", "cajero");
-
-  if (profilesError) {
-    throw new Error(profilesError.message ?? "No fue posible cargar las cajeras.");
-  }
-
-  const cashierIds = (cashierProfiles ?? []).map((profile) => String(profile.id));
+  const cashierIds = await getCashierProfileIds(adminSupabase);
 
   if (!cashierIds.length) {
     return null;

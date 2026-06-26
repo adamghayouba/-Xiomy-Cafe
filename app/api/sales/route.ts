@@ -2,11 +2,13 @@ import { NextResponse } from "next/server";
 import { isPaymentMethod } from "@/lib/pos-data";
 import { isSettlementType } from "@/lib/pos-domain";
 import { requireApiContext } from "@/lib/api-context";
+import { getCashierProfileIds } from "@/lib/cash-drawer";
 import {
   mapClientTransactionRecord,
   mapSaleRecord,
   mapSummaryRecord
 } from "@/lib/pos-domain";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 
 const salesSelect =
   "id, client_id, created_at, payment_method, settlement_type, gross_total, discount_total, net_total, estimated_cost, gross_profit, items_count, sale_status, is_cancelled, cancellation_reason, cancellation_requested_at, cancellation_approved_at, cancellation_request_status, client:clients(full_name, pricing_type), sale_items(id, quantity, unit_price, line_total, product:products(name))";
@@ -57,6 +59,61 @@ export async function GET() {
   }
 
   const window = getCurrentBogotaWindow();
+
+  if (context.profile.role === "cajero") {
+    const adminSupabase = createAdminSupabaseClient();
+    const cashierIds = await getCashierProfileIds(adminSupabase);
+
+    if (!cashierIds.length) {
+      return NextResponse.json({
+        sales: [],
+        rangeStart: window.startIso,
+        rangeEnd: window.nowIso,
+        businessDate: window.businessDate
+      });
+    }
+
+    const { data: lastCloseout, error: closeoutError } = await adminSupabase
+      .from("cash_closeouts")
+      .select("created_at")
+      .in("cashier_user_id", cashierIds)
+      .eq("business_date", window.businessDate)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (closeoutError) {
+      return NextResponse.json(
+        { error: closeoutError.message ?? "No fue posible cargar el último cierre de caja." },
+        { status: 400 }
+      );
+    }
+
+    const rangeStart = lastCloseout?.created_at ? String(lastCloseout.created_at) : window.startIso;
+    const { data, error } = await adminSupabase
+      .from("sales")
+      .select(salesSelect)
+      .in("cashier_user_id", cashierIds)
+      .gte("created_at", rangeStart)
+      .lt("created_at", window.endIso)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      return NextResponse.json(
+        { error: error.message ?? "No fue posible cargar la historia diaria de ventas." },
+        { status: 400 }
+      );
+    }
+
+    return NextResponse.json({
+      sales: (data ?? []).map((row) =>
+        mapClientTransactionRecord(row as Record<string, unknown>)
+      ),
+      rangeStart,
+      rangeEnd: window.nowIso,
+      businessDate: window.businessDate
+    });
+  }
 
   const { data: lastCloseout, error: closeoutError } = await context.supabase
     .from("cash_closeouts")

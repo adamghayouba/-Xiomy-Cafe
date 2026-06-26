@@ -1,4 +1,5 @@
 import { getRolePermissions } from "@/lib/pos-permissions";
+import { getCashierProfileIds } from "@/lib/cash-drawer";
 import {
   mapClientRecord,
   mapProductRecord,
@@ -6,6 +7,7 @@ import {
   mapSummaryRecord
 } from "@/lib/pos-domain";
 import { getBogotaDayRange } from "@/lib/pos-utils";
+import { createAdminSupabaseClient } from "@/lib/supabase/admin";
 import type { PosBootstrapData, PosProfile } from "@/lib/pos-types";
 
 function formatBootstrapError(scope: string, message: string) {
@@ -38,35 +40,45 @@ export async function getPosBootstrapData(
       ? supabase.from("clients").select("*").order("full_name")
       : supabase.from("clients").select("*").eq("active", true).order("full_name");
 
+  const recentSalesPromise = permissions["sales.history"]
+    ? supabase
+        .from("sales")
+        .select(salesColumns)
+        .gte("created_at", dayRange.startIso)
+        .lt("created_at", dayRange.endIso)
+        .order("created_at", { ascending: false })
+        .limit(10)
+    : permissions["sales.cancel.request"]
+      ? (async () => {
+          const adminSupabase = createAdminSupabaseClient();
+          const cashierIds = await getCashierProfileIds(adminSupabase);
+
+          if (!cashierIds.length) {
+            return { data: [], error: null };
+          }
+
+          return adminSupabase
+            .from("sales")
+            .select(salesColumns)
+            .in("cashier_user_id", cashierIds)
+            .gte("created_at", dayRange.startIso)
+            .lt("created_at", dayRange.endIso)
+            .order("created_at", { ascending: false })
+            .limit(8);
+        })()
+      : Promise.resolve({ data: [], error: null });
+
   const [
     { data: productRows, error: productsError },
     { data: clientRows, error: clientsError },
     { data: summaryRows, error: summaryError },
     recentSalesResult
-  ] =
-    await Promise.all([
-      productsQuery,
-      clientsQuery,
-      supabase.rpc("sales_today_summary"),
-      permissions["sales.history"]
-        ? supabase
-            .from("sales")
-            .select(salesColumns)
-            .gte("created_at", dayRange.startIso)
-            .lt("created_at", dayRange.endIso)
-            .order("created_at", { ascending: false })
-            .limit(10)
-        : permissions["sales.cancel.request"]
-          ? supabase
-              .from("sales")
-              .select(salesColumns)
-              .eq("cashier_user_id", profile.id)
-              .gte("created_at", dayRange.startIso)
-              .lt("created_at", dayRange.endIso)
-              .order("created_at", { ascending: false })
-              .limit(8)
-          : Promise.resolve({ data: [], error: null })
-    ]);
+  ] = await Promise.all([
+    productsQuery,
+    clientsQuery,
+    supabase.rpc("sales_today_summary"),
+    recentSalesPromise
+  ]);
 
   if (productsError) {
     throw new Error(formatBootstrapError("productos", productsError.message));
