@@ -66,7 +66,14 @@ import type {
   SaleCancellationRequest,
   SaleHistoryEntry
 } from "@/lib/pos-types";
-import { formatCop, formatSaleTime, getTodayKey } from "@/lib/pos-utils";
+import {
+  formatCop,
+  formatSaleTime,
+  getBogotaCustomRange,
+  getBogotaPeriodRange,
+  getBogotaSalesRange,
+  getTodayKey
+} from "@/lib/pos-utils";
 import { downloadLowStockPdf } from "@/lib/stock-pdf";
 import {
   downloadSalesReportCsv,
@@ -78,8 +85,10 @@ type PosAppProps = {
 };
 
 type JefaSection = "ventas" | "productos" | "clientes";
-type JefaProductSection = "catalogo" | "stock";
+type JefaProductSection = "catalogo" | "stock" | "vendidos";
 type JefaClientSection = "lista" | "consumo";
+type HistoryModalView = "closeouts" | "withdrawals" | null;
+type HistoryModalPeriod = "today" | "week" | "month" | "year" | "custom";
 type AlcoholType = "Cerveza" | "Aguardiente" | "Ron" | "Whisky" | "Otros";
 type CloseoutEntryPoint = "caja" | "cierre";
 type CajaPanelAction = "withdrawal" | "cash-retirement";
@@ -201,8 +210,13 @@ export function PosApp({ initialData }: PosAppProps) {
     [initialData.profile.role]
   );
   const identityLabel = useMemo(
-    () => formatProfileIdentity(initialData.profile.role, initialData.profile.fullName),
-    [initialData.profile.fullName, initialData.profile.role]
+    () =>
+      formatProfileIdentity(
+        initialData.profile.role,
+        initialData.profile.fullName,
+        initialData.profile.email
+      ),
+    [initialData.profile.email, initialData.profile.fullName, initialData.profile.role]
   );
   const [selectedCategory, setSelectedCategory] = useState<TopLevelCategory>("Bebidas");
   const [selectedBeverageSubcategory, setSelectedBeverageSubcategory] =
@@ -266,6 +280,10 @@ export function PosApp({ initialData }: PosAppProps) {
   const [closeoutHistory, setCloseoutHistory] = useState<CashCloseoutRecord[]>([]);
   const [closeoutEntryPoint, setCloseoutEntryPoint] = useState<CloseoutEntryPoint>("caja");
   const [cashWithdrawals, setCashWithdrawals] = useState<CashWithdrawalRecord[]>([]);
+  const [historyModalView, setHistoryModalView] = useState<HistoryModalView>(null);
+  const [historyModalPeriod, setHistoryModalPeriod] = useState<HistoryModalPeriod>("month");
+  const [historyModalStartDate, setHistoryModalStartDate] = useState(getTodayKey());
+  const [historyModalEndDate, setHistoryModalEndDate] = useState(getTodayKey());
   const [activeCajaPanel, setActiveCajaPanel] = useState<CajaPanelAction | null>(null);
   const [withdrawalAmount, setWithdrawalAmount] = useState("");
   const [withdrawalNote, setWithdrawalNote] = useState("");
@@ -309,6 +327,60 @@ export function PosApp({ initialData }: PosAppProps) {
   const selectedClient = useMemo(
     () => activeClients.find((client) => client.id === selectedClientId) ?? null,
     [activeClients, selectedClientId]
+  );
+
+  const visibleCloseoutHistory = useMemo(() => closeoutHistory.slice(0, 5), [closeoutHistory]);
+
+  const visibleSalesWithdrawals = useMemo(() => cashWithdrawals.slice(0, 5), [cashWithdrawals]);
+
+  const filteredHistoryRange = useMemo(() => {
+    if (historyModalPeriod === "custom") {
+      if (!historyModalStartDate || !historyModalEndDate) {
+        return null;
+      }
+
+      return getBogotaCustomRange(historyModalStartDate, historyModalEndDate);
+    }
+
+    if (historyModalPeriod === "year") {
+      return getBogotaSalesRange("year");
+    }
+
+    return getBogotaPeriodRange(historyModalPeriod);
+  }, [historyModalEndDate, historyModalPeriod, historyModalStartDate]);
+
+  const filteredCloseoutHistory = useMemo(() => {
+    if (!filteredHistoryRange) {
+      return closeoutHistory;
+    }
+
+    const start = new Date(filteredHistoryRange.startIso).getTime();
+    const end = new Date(filteredHistoryRange.endIso).getTime();
+
+    return closeoutHistory.filter((closeout) => {
+      const createdAt = new Date(closeout.createdAt).getTime();
+      return createdAt >= start && createdAt < end;
+    });
+  }, [closeoutHistory, filteredHistoryRange]);
+
+  const filteredSalesWithdrawals = useMemo(() => {
+    if (!filteredHistoryRange) {
+      return cashWithdrawals;
+    }
+
+    const start = new Date(filteredHistoryRange.startIso).getTime();
+    const end = new Date(filteredHistoryRange.endIso).getTime();
+
+    return cashWithdrawals.filter((withdrawal) => {
+      const createdAt = new Date(withdrawal.createdAt).getTime();
+      return createdAt >= start && createdAt < end;
+    });
+  }, [cashWithdrawals, filteredHistoryRange]);
+
+  const filteredSalesWithdrawalsTotal = useMemo(
+    () =>
+      filteredSalesWithdrawals.reduce((total, withdrawal) => total + withdrawal.amount, 0),
+    [filteredSalesWithdrawals]
   );
 
   const alcoholProducts = useMemo(
@@ -2363,73 +2435,15 @@ export function PosApp({ initialData }: PosAppProps) {
                     </div>
                   </div>
 
-                  <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-                    <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
-                      <p className="text-sm font-semibold">Productos más vendidos</p>
-                      <div className="mt-4 space-y-3">
-                        {salesReport.topProducts.length ? (
-                          salesReport.topProducts.map((product) => (
-                            <div
-                              key={`${product.productId}-${product.productName}`}
-                              className="flex items-center justify-between rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
-                            >
-                              <div>
-                                <p className="font-semibold">{product.productName}</p>
-                                <p className="mt-1 subtle">{product.quantity} vendidos</p>
-                              </div>
-                              <span className="font-semibold">{formatCop(product.grossTotal)}</span>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
-                            No hay productos vendidos en este periodo.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold">Consumo por cliente</p>
-                      <span className="text-xs subtle">Resumen del periodo</span>
-                    </div>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {salesReport.topClients.length ? (
-                        salesReport.topClients.map((client) => (
-                          <div
-                            key={client.clientId}
-                            className="rounded-3xl bg-[var(--surface)] p-4 ring-1 ring-[var(--border)]"
-                          >
-                            <p className="font-semibold">{client.clientName}</p>
-                            <p className="mt-2 text-sm subtle">
-                              {client.transactionsCount} transacciones
-                            </p>
-                            <p className="mt-2 text-lg font-semibold">
-                              {formatCop(client.grossTotal)}
-                            </p>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle md:col-span-2 xl:col-span-3">
-                          No hay consumo por cliente para este periodo.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
                   {can("cash.closeout.review") ? (
                     <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)]">
                       <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
                         <div className="flex items-center justify-between gap-3">
                           <p className="text-sm font-semibold">Historial de cierres de caja</p>
-                          <span className="text-xs subtle">
-                            {closeoutHistory.length} registro{closeoutHistory.length === 1 ? "" : "s"}
-                          </span>
                         </div>
                         <div className="mt-4 space-y-3">
                           {closeoutHistory.length ? (
-                            closeoutHistory.map((closeout) => (
+                            visibleCloseoutHistory.map((closeout) => (
                               <div
                                 key={closeout.id}
                                 className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
@@ -2463,18 +2477,31 @@ export function PosApp({ initialData }: PosAppProps) {
                             </div>
                           )}
                         </div>
+                        {closeoutHistory.length ? (
+                          <div className="mt-4 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHistoryModalPeriod("month");
+                                setHistoryModalStartDate(getTodayKey());
+                                setHistoryModalEndDate(getTodayKey());
+                                setHistoryModalView("closeouts");
+                              }}
+                              className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                            >
+                              Ver historial
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
                         <div className="flex items-center justify-between gap-3">
                           <p className="text-sm font-semibold">Salidas de caja</p>
-                          <span className="text-xs subtle">
-                            {cashWithdrawals.length} registro{cashWithdrawals.length === 1 ? "" : "s"}
-                          </span>
                         </div>
                         <div className="mt-4 space-y-3">
                           {cashWithdrawals.length ? (
-                            cashWithdrawals.map((withdrawal) => (
+                            visibleSalesWithdrawals.map((withdrawal) => (
                               <div
                                 key={withdrawal.id}
                                 className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
@@ -2503,6 +2530,22 @@ export function PosApp({ initialData }: PosAppProps) {
                             </div>
                           )}
                         </div>
+                        {cashWithdrawals.length ? (
+                          <div className="mt-4 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setHistoryModalPeriod("month");
+                                setHistoryModalStartDate(getTodayKey());
+                                setHistoryModalEndDate(getTodayKey());
+                                setHistoryModalView("withdrawals");
+                              }}
+                              className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                            >
+                              Ver historial
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   ) : null}
@@ -3932,7 +3975,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   >
                     Cerrar editor
                   </button>
-                ) : (
+                ) : !isJefaView || jefaProductSection === "catalogo" ? (
                   <button
                     type="button"
                     onClick={startCreatingProduct}
@@ -3941,7 +3984,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     <PlusCircle className="h-4 w-4" />
                     Nuevo producto
                   </button>
-                )}
+                ) : null}
               </div>
 
               {productMessage ? (
@@ -3973,6 +4016,17 @@ export function PosApp({ initialData }: PosAppProps) {
                     }`}
                   >
                     Niveles de stock
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setJefaProductSection("vendidos")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      jefaProductSection === "vendidos"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Vendidos
                   </button>
                 </div>
               ) : null}
@@ -4081,6 +4135,103 @@ export function PosApp({ initialData }: PosAppProps) {
                       ) : (
                         <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
                           No hay productos activos con control de stock.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : jefaProductSection === "vendidos" ? (
+                <div className="mt-5 space-y-5">
+                  <div className="rounded-3xl bg-white p-4 ring-1 ring-[var(--border)] sm:p-5">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold">Filtro de productos vendidos</p>
+                        <p className="mt-1 text-xs subtle">
+                          Usa el mismo rango de tiempo del reporte de ventas.
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <select
+                          value={salesReportPeriod}
+                          onChange={(event) =>
+                            setSalesReportPeriod(event.target.value as SalesReportPeriod)
+                          }
+                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                        >
+                          <option value="day">Día</option>
+                          <option value="week">Semana</option>
+                          <option value="month">Mes</option>
+                          <option value="year">Año</option>
+                          <option value="custom">Rango personalizado</option>
+                        </select>
+                        {salesReportPeriod === "custom" ? (
+                          <>
+                            <input
+                              type="date"
+                              value={salesReportStartDate}
+                              onChange={(event) => setSalesReportStartDate(event.target.value)}
+                              className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                            />
+                            <input
+                              type="date"
+                              value={salesReportEndDate}
+                              onChange={(event) => setSalesReportEndDate(event.target.value)}
+                              className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                            />
+                          </>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={loadSalesReport}
+                          disabled={
+                            isLoadingSalesReport ||
+                            (salesReportPeriod === "custom" &&
+                              (!salesReportStartDate || !salesReportEndDate))
+                          }
+                          className="rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {isLoadingSalesReport ? "Cargando..." : "Actualizar"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold">Productos vendidos</p>
+                        <p className="mt-1 text-xs subtle">Resumen del periodo seleccionado.</p>
+                      </div>
+                      <div className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-right ring-1 ring-[var(--border)]">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] subtle">
+                          Total productos vendidos
+                        </p>
+                        <p className="mt-1 text-2xl font-semibold">
+                          {salesReport ? salesReport.productsSoldCount : 0}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 space-y-3">
+                      {salesReport?.topProducts.length ? (
+                        salesReport.topProducts.map((product) => (
+                          <div
+                            key={`${product.productId}-${product.productName}`}
+                            className="flex items-center justify-between rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                          >
+                            <div>
+                              <p className="font-semibold">{product.productName}</p>
+                              <p className="mt-1 subtle">{product.quantity} vendidos</p>
+                            </div>
+                            <span className="font-semibold">{formatCop(product.grossTotal)}</span>
+                          </div>
+                        ))
+                      ) : isLoadingSalesReport ? (
+                        <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                          Cargando productos vendidos...
+                        </div>
+                      ) : (
+                        <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                          No hay productos vendidos para el periodo actual.
                         </div>
                       )}
                     </div>
@@ -4333,6 +4484,174 @@ export function PosApp({ initialData }: PosAppProps) {
                 </div>
               )}
             </section>
+          ) : null}
+
+          {historyModalView ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-[var(--background)] sm:items-center sm:justify-center">
+              <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-[var(--surface)] p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-4xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold">
+                      {historyModalView === "closeouts"
+                        ? "Historial de cierres de caja"
+                        : "Historial de salidas de caja"}
+                    </p>
+                    <p className="mt-1 text-sm subtle">
+                      Consulta el historial completo sin saturar la vista principal.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalView(null)}
+                    className="inline-flex items-center justify-center rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mt-5 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalPeriod("today")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      historyModalPeriod === "today"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Hoy
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalPeriod("week")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      historyModalPeriod === "week"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Semana
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalPeriod("month")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      historyModalPeriod === "month"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Mes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalPeriod("year")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      historyModalPeriod === "year"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Año
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryModalPeriod("custom")}
+                    className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                      historyModalPeriod === "custom"
+                        ? "bg-[var(--accent)] text-ink"
+                        : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                    }`}
+                  >
+                    Rango
+                  </button>
+                </div>
+
+                {historyModalPeriod === "custom" ? (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <input
+                      type="date"
+                      value={historyModalStartDate}
+                      onChange={(event) => setHistoryModalStartDate(event.target.value)}
+                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                    <input
+                      type="date"
+                      value={historyModalEndDate}
+                      onChange={(event) => setHistoryModalEndDate(event.target.value)}
+                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </div>
+                ) : null}
+
+                <div className="mt-5 space-y-3">
+                  {historyModalView === "closeouts" ? (
+                    filteredCloseoutHistory.length ? (
+                      filteredCloseoutHistory.map((closeout) => (
+                        <div
+                          key={closeout.id}
+                          className="rounded-2xl bg-white px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="font-semibold">
+                                {closeout.cashierLabel} · {closeout.businessDate.split("-").reverse().join("/")}
+                              </p>
+                              <p className="mt-1 subtle">
+                                Esperado: {formatCop(closeout.expectedCash)} · Contado: {formatCop(closeout.countedCash)}
+                              </p>
+                              <p className="mt-1 subtle">Diferencia: {formatCop(closeout.difference)}</p>
+                              {closeout.reviewedAt ? (
+                                <p className="mt-1 subtle">
+                                  Revisado por {closeout.reviewedByLabel ?? "Jefa"} · {formatSaleTime(closeout.reviewedAt)}
+                                </p>
+                              ) : null}
+                            </div>
+                            <span className="text-xs subtle">{formatSaleTime(closeout.createdAt)}</span>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                        No hay cierres de caja para este filtro.
+                      </div>
+                    )
+                  ) : filteredSalesWithdrawals.length ? (
+                    <>
+                      <div className="rounded-3xl bg-[var(--surface)] px-5 py-4 ring-1 ring-[var(--border)]">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.16em] subtle">
+                          Total del periodo
+                        </p>
+                        <p className="mt-2 text-3xl font-semibold">
+                          {formatCop(filteredSalesWithdrawalsTotal)}
+                        </p>
+                      </div>
+                      {filteredSalesWithdrawals.map((withdrawal) => (
+                        <div
+                          key={withdrawal.id}
+                          className="rounded-2xl bg-white px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                        >
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="font-semibold">{formatCop(withdrawal.amount)}</p>
+                              <p className="mt-1 subtle">
+                                {withdrawal.createdByLabel} · {withdrawal.businessDate.split("-").reverse().join("/")}
+                              </p>
+                              {withdrawal.note ? <p className="mt-1 subtle">Nota: {withdrawal.note}</p> : null}
+                            </div>
+                            <span className="text-xs subtle">{formatSaleTime(withdrawal.createdAt)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                      No hay salidas de caja para este filtro.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : null}
 
           {can("products.admin") && isProductEditorOpen ? (

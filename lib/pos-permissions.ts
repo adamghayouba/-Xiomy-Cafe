@@ -76,11 +76,25 @@ export function formatRoleLabel(role: PosRole) {
   return roleLabels[role];
 }
 
-export function formatProfileIdentity(role: PosRole, fullName: string | null | undefined) {
+export function formatProfileIdentity(
+  role: PosRole,
+  fullName: string | null | undefined,
+  email?: string | null
+) {
   if (role === "jefa") {
     const normalizedName = fullName?.trim() === "Angie" ? "Anyi" : fullName?.trim();
 
     return normalizedName?.length ? normalizedName : "Jefa";
+  }
+
+  if (email?.trim().toLowerCase() === "cajera1@xiomycafe.com") {
+    return "Deisy";
+  }
+
+  const normalizedName = fullName?.trim();
+
+  if (normalizedName && normalizedName.toLowerCase() !== "cajera") {
+    return normalizedName;
   }
 
   return "Cajera";

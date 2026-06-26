@@ -10,7 +10,11 @@ export async function AppShell({ children }: { children: ReactNode }) {
   const session = env.isConfigured ? await getOptionalSessionContext() : null;
   const profileTheme = session?.profile ? getProfileTheme(session.profile.role) : "cajera";
   const identityLabel = session?.profile
-    ? formatProfileIdentity(session.profile.role, session.profile.fullName)
+    ? formatProfileIdentity(
+        session.profile.role,
+        session.profile.fullName,
+        session.profile.email
+      )
     : null;
 
   return (
