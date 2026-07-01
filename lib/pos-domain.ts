@@ -696,8 +696,7 @@ export function buildSalesReport(params: {
       right.quantity === left.quantity
         ? right.grossTotal - left.grossTotal
         : right.quantity - left.quantity
-    )
-    .slice(0, 8);
+    );
 
   const clientMap = new Map<string, SalesTopClient>();
 
