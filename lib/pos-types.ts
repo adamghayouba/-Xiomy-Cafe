@@ -217,6 +217,25 @@ export type CashCloseoutSnapshot = {
 
 export type CashWithdrawalScope = "shift" | "accumulated";
 
+export type StockMovementType = "restock" | "adjustment_out";
+
+export type StockAdjustmentReason =
+  | "Vencido"
+  | "Error de conteo"
+  | "Pérdida"
+  | "Otro";
+
+export type StockMovementRecord = {
+  id: string;
+  productId: string;
+  movementType: StockMovementType;
+  quantity: number;
+  reason: StockAdjustmentReason | null;
+  note: string | null;
+  createdByLabel: string;
+  createdAt: string;
+};
+
 export type CashWithdrawalRecord = {
   id: string;
   businessDate: string;

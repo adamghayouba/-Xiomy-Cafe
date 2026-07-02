@@ -64,7 +64,9 @@ import type {
   SalesReport,
   SalesReportPeriod,
   SaleCancellationRequest,
-  SaleHistoryEntry
+  SaleHistoryEntry,
+  StockAdjustmentReason,
+  StockMovementRecord
 } from "@/lib/pos-types";
 import {
   formatCop,
@@ -89,6 +91,7 @@ type JefaProductSection = "catalogo" | "stock" | "vendidos";
 type JefaClientSection = "lista" | "consumo";
 type HistoryModalView = "closeouts" | "withdrawals" | null;
 type HistoryModalPeriod = "today" | "week" | "month" | "year" | "custom";
+type StockHistoryPeriod = "week" | "month" | "year" | "all" | "custom";
 type AlcoholType = "Cerveza" | "Aguardiente" | "Ron" | "Whisky" | "Otros";
 type CloseoutEntryPoint = "caja" | "cierre";
 type CajaPanelAction = "withdrawal" | "cash-retirement";
@@ -159,6 +162,34 @@ function getAlcoholPresentation(product: Product): AlcoholPresentation | null {
 function renderProductBadge(product: Product) {
   const name = product.name.toLowerCase();
 
+  if (name.includes("torta")) {
+    return "🍰";
+  }
+
+  if (name.includes("milo")) {
+    return "🍫";
+  }
+
+  if (name.includes("hydralite") || name === "agua") {
+    return "💧";
+  }
+
+  if (name.includes("saviloe") || name.includes("tutti frutti")) {
+    return "🧃";
+  }
+
+  if (name.includes("bretaña") || name.includes("gaseosa") || name.includes("cocacola")) {
+    return "🥤";
+  }
+
+  if (name.includes("aromatica")) {
+    return "🍵";
+  }
+
+  if (name.includes("tinto") || name.includes("café")) {
+    return "☕";
+  }
+
   if (name.includes("aguardiente verde")) {
     return (
       <span
@@ -202,6 +233,31 @@ function renderProductBadge(product: Product) {
   }
 
   return product.image || "🍽️";
+}
+
+function formatStockMovementDateTime(value: string) {
+  return new Intl.DateTimeFormat("es-CO", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "America/Bogota"
+  }).format(new Date(value));
+}
+
+const stockAdjustmentReasonOptions: StockAdjustmentReason[] = [
+  "Vencido",
+  "Error de conteo",
+  "Pérdida",
+  "Otro"
+];
+
+function getStockMovementTitle(movement: StockMovementRecord) {
+  return movement.movementType === "adjustment_out"
+    ? `-${movement.quantity} unidades`
+    : `+${movement.quantity} unidades`;
+}
+
+function getStockMovementLabel(movement: StockMovementRecord) {
+  return movement.movementType === "adjustment_out" ? "Ajuste de salida" : "Ingreso";
 }
 
 export function PosApp({ initialData }: PosAppProps) {
@@ -260,6 +316,10 @@ export function PosApp({ initialData }: PosAppProps) {
   const [salesReportEndDate, setSalesReportEndDate] = useState(getTodayKey());
   const [salesReportError, setSalesReportError] = useState<string | null>(null);
   const [fatherTabError, setFatherTabError] = useState<string | null>(null);
+  const [stockSearchQuery, setStockSearchQuery] = useState("");
+  const [stockStatusFilter, setStockStatusFilter] = useState<
+    "all" | "available" | "low" | "out"
+  >("all");
   const [isFiadoOpen, setIsFiadoOpen] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Efectivo");
@@ -295,6 +355,19 @@ export function PosApp({ initialData }: PosAppProps) {
     businessDate: string;
   } | null>(null);
   const [dailySalesError, setDailySalesError] = useState<string | null>(null);
+  const [stockMovements, setStockMovements] = useState<StockMovementRecord[]>([]);
+  const [restockProduct, setRestockProduct] = useState<Product | null>(null);
+  const [adjustmentProduct, setAdjustmentProduct] = useState<Product | null>(null);
+  const [historyProduct, setHistoryProduct] = useState<Product | null>(null);
+  const [restockQuantity, setRestockQuantity] = useState("");
+  const [restockNote, setRestockNote] = useState("");
+  const [adjustmentQuantity, setAdjustmentQuantity] = useState("");
+  const [adjustmentReason, setAdjustmentReason] =
+    useState<StockAdjustmentReason>("Vencido");
+  const [adjustmentNote, setAdjustmentNote] = useState("");
+  const [stockHistoryPeriod, setStockHistoryPeriod] = useState<StockHistoryPeriod>("month");
+  const [stockHistoryStartDate, setStockHistoryStartDate] = useState(getTodayKey());
+  const [stockHistoryEndDate, setStockHistoryEndDate] = useState(getTodayKey());
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [isSavingSale, startSaleTransition] = useTransition();
   const [isSavingProduct, startProductTransition] = useTransition();
@@ -313,6 +386,9 @@ export function PosApp({ initialData }: PosAppProps) {
   const [isAcknowledgingCloseout, startCloseoutAcknowledgeTransition] = useTransition();
   const [isSavingWithdrawal, startWithdrawalTransition] = useTransition();
   const [isLoadingDailySales, startDailySalesTransition] = useTransition();
+  const [isLoadingStockMovements, startStockMovementsTransition] = useTransition();
+  const [isSavingRestock, startRestockTransition] = useTransition();
+  const [isSavingAdjustment, startAdjustmentTransition] = useTransition();
   const productNameInputRef = useRef<HTMLInputElement | null>(null);
 
   function can(permission: PosPermission) {
@@ -332,7 +408,71 @@ export function PosApp({ initialData }: PosAppProps) {
   const visibleCloseoutHistory = useMemo(() => closeoutHistory.slice(0, 5), [closeoutHistory]);
 
   const visibleSalesWithdrawals = useMemo(() => cashWithdrawals.slice(0, 5), [cashWithdrawals]);
+  const stockMovementsByProduct = useMemo(() => {
+    const movementMap = new Map<string, StockMovementRecord[]>();
 
+    for (const movement of stockMovements) {
+      const currentMovements = movementMap.get(movement.productId) ?? [];
+      currentMovements.push(movement);
+      movementMap.set(movement.productId, currentMovements);
+    }
+
+    return movementMap;
+  }, [stockMovements]);
+  const latestStockMovementByProduct = useMemo(() => {
+    const latestMap = new Map<string, StockMovementRecord>();
+
+    for (const movement of stockMovements) {
+      if (!latestMap.has(movement.productId)) {
+        latestMap.set(movement.productId, movement);
+      }
+    }
+
+    return latestMap;
+  }, [stockMovements]);
+  const selectedProductHistory = useMemo(() => {
+    if (!historyProduct) {
+      return [];
+    }
+
+    return stockMovementsByProduct.get(historyProduct.id) ?? [];
+  }, [historyProduct, stockMovementsByProduct]);
+  const filteredStockHistoryRange = useMemo(() => {
+    if (stockHistoryPeriod === "all") {
+      return null;
+    }
+
+    if (stockHistoryPeriod === "custom") {
+      if (!stockHistoryStartDate || !stockHistoryEndDate) {
+        return null;
+      }
+
+      return getBogotaCustomRange(stockHistoryStartDate, stockHistoryEndDate);
+    }
+
+    if (stockHistoryPeriod === "year") {
+      return getBogotaSalesRange("year");
+    }
+
+    return getBogotaPeriodRange(stockHistoryPeriod);
+  }, [stockHistoryEndDate, stockHistoryPeriod, stockHistoryStartDate]);
+  const filteredSelectedProductHistory = useMemo(() => {
+    if (stockHistoryPeriod === "all" || !filteredStockHistoryRange) {
+      return selectedProductHistory;
+    }
+
+    const start = new Date(filteredStockHistoryRange.startIso).getTime();
+    const end = new Date(filteredStockHistoryRange.endIso).getTime();
+
+    return selectedProductHistory.filter((movement) => {
+      const createdAt = new Date(movement.createdAt).getTime();
+      return createdAt >= start && createdAt < end;
+    });
+  }, [filteredStockHistoryRange, selectedProductHistory, stockHistoryPeriod]);
+  const visibleSelectedProductHistory = useMemo(
+    () => filteredSelectedProductHistory.slice(0, 10),
+    [filteredSelectedProductHistory]
+  );
   const filteredHistoryRange = useMemo(() => {
     if (historyModalPeriod === "custom") {
       if (!historyModalStartDate || !historyModalEndDate) {
@@ -545,6 +685,35 @@ export function PosApp({ initialData }: PosAppProps) {
         return (left.stockQuantity ?? 0) - (right.stockQuantity ?? 0) || left.name.localeCompare(right.name);
       });
   }, [menuProducts]);
+  const filteredStockTrackedProducts = useMemo(() => {
+    const normalizedQuery = stockSearchQuery.trim().toLowerCase();
+
+    return stockTrackedProducts.filter((product) => {
+      const matchesSearch =
+        !normalizedQuery ||
+        product.name.toLowerCase().includes(normalizedQuery) ||
+        product.category.toLowerCase().includes(normalizedQuery) ||
+        (product.subcategory ?? "").toLowerCase().includes(normalizedQuery);
+
+      if (!matchesSearch) {
+        return false;
+      }
+
+      if (stockStatusFilter === "low") {
+        return !isProductOutOfStock(product) && isProductLowStock(product);
+      }
+
+      if (stockStatusFilter === "out") {
+        return isProductOutOfStock(product);
+      }
+
+      if (stockStatusFilter === "available") {
+        return !isProductOutOfStock(product) && !isProductLowStock(product);
+      }
+
+      return true;
+    });
+  }, [stockSearchQuery, stockStatusFilter, stockTrackedProducts]);
   const sortedClients = useMemo(
     () => [...clients].sort((left, right) => left.fullName.localeCompare(right.fullName)),
     [clients]
@@ -1119,6 +1288,142 @@ export function PosApp({ initialData }: PosAppProps) {
     });
   }
 
+  function startRestockProduct(product: Product) {
+    if (!can("products.edit")) {
+      return;
+    }
+
+    setRestockProduct(product);
+    setRestockQuantity("");
+    setRestockNote("");
+    setProductMessage(null);
+  }
+
+  function startAdjustmentProduct(product: Product) {
+    if (!can("products.edit")) {
+      return;
+    }
+
+    setAdjustmentProduct(product);
+    setAdjustmentQuantity("");
+    setAdjustmentReason("Vencido");
+    setAdjustmentNote("");
+    setProductMessage(null);
+  }
+
+  function openProductHistory(product: Product) {
+    if (!can("products.admin")) {
+      return;
+    }
+
+    setStockHistoryPeriod("month");
+    setStockHistoryStartDate(getTodayKey());
+    setStockHistoryEndDate(getTodayKey());
+    setHistoryProduct(product);
+  }
+
+  function saveStockRestock() {
+    if (!can("products.edit") || !restockProduct) {
+      return;
+    }
+
+    const quantity = Number(restockQuantity);
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setProductMessage("Debes ingresar una cantidad válida para el ingreso.");
+      return;
+    }
+
+    startRestockTransition(async () => {
+      const response = await fetch("/api/stock-movements", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          productId: restockProduct.id,
+          quantity,
+          note: restockNote
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        setProductMessage(result.error ?? "No fue posible registrar el ingreso.");
+        return;
+      }
+
+      setMenuProducts((currentProducts) =>
+        currentProducts.map((product) =>
+          product.id === restockProduct.id ? (result.product as Product) : product
+        )
+      );
+      setStockMovements((currentMovements) => [
+        result.movement as StockMovementRecord,
+        ...currentMovements
+      ]);
+      setProductMessage("Ingreso de stock registrado.");
+      setRestockProduct(null);
+      setRestockQuantity("");
+      setRestockNote("");
+    });
+  }
+
+  function saveStockAdjustment() {
+    if (!can("products.edit") || !adjustmentProduct) {
+      return;
+    }
+
+    const quantity = Number(adjustmentQuantity);
+
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setProductMessage("Debes ingresar una cantidad válida para el ajuste.");
+      return;
+    }
+
+    if (quantity > (adjustmentProduct.stockQuantity ?? 0)) {
+      setProductMessage("El ajuste no puede ser mayor que el stock actual.");
+      return;
+    }
+
+    startAdjustmentTransition(async () => {
+      const response = await fetch("/api/stock-movements", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          actionType: "adjustment",
+          productId: adjustmentProduct.id,
+          quantity,
+          reason: adjustmentReason,
+          note: adjustmentNote
+        })
+      });
+      const result = await response.json();
+
+      if (!response.ok) {
+        setProductMessage(result.error ?? "No fue posible registrar el ajuste.");
+        return;
+      }
+
+      setMenuProducts((currentProducts) =>
+        currentProducts.map((product) =>
+          product.id === adjustmentProduct.id ? (result.product as Product) : product
+        )
+      );
+      setStockMovements((currentMovements) => [
+        result.movement as StockMovementRecord,
+        ...currentMovements
+      ]);
+      setProductMessage("Ajuste de stock registrado.");
+      setAdjustmentProduct(null);
+      setAdjustmentQuantity("");
+      setAdjustmentReason("Vencido");
+      setAdjustmentNote("");
+    });
+  }
+
   function saveClient() {
     if (!can("products.admin")) {
       return;
@@ -1230,6 +1535,24 @@ export function PosApp({ initialData }: PosAppProps) {
       }
 
       setSalesReport(result as SalesReport);
+    });
+  }
+
+  function loadStockMovements() {
+    if (!can("products.admin")) {
+      return;
+    }
+
+    startStockMovementsTransition(async () => {
+      const response = await fetch("/api/stock-movements");
+      const result = await response.json();
+
+      if (!response.ok) {
+        setProductMessage(result.error ?? "No fue posible cargar el historial de movimientos.");
+        return;
+      }
+
+      setStockMovements((result.movements ?? []) as StockMovementRecord[]);
     });
   }
 
@@ -1745,6 +2068,15 @@ export function PosApp({ initialData }: PosAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [salesReportPeriod, initialData.profile.role]);
 
+  useEffect(() => {
+    if (!can("products.admin") || !isJefaView || jefaProductSection !== "stock") {
+      return;
+    }
+
+    loadStockMovements();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialData.profile.role, isJefaView, jefaProductSection]);
+
   return (
     <div className="space-y-6">
       <section className="panel overflow-hidden">
@@ -1822,6 +2154,46 @@ export function PosApp({ initialData }: PosAppProps) {
         <div className="panel px-5 py-4 text-sm ring-1 ring-[var(--border)]">
           {closeoutMessage}
         </div>
+      ) : null}
+
+      {isJefaView ? (
+        <section className="panel p-4 sm:p-5">
+          <div className="flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => setJefaSection("ventas")}
+              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                jefaSection === "ventas"
+                  ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+              }`}
+            >
+              Ventas
+            </button>
+            <button
+              type="button"
+              onClick={() => setJefaSection("productos")}
+              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                jefaSection === "productos"
+                  ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+              }`}
+            >
+              Productos
+            </button>
+            <button
+              type="button"
+              onClick={() => setJefaSection("clientes")}
+              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+                jefaSection === "clientes"
+                  ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
+              }`}
+            >
+              Clientes
+            </button>
+          </div>
+        </section>
       ) : null}
 
       {isJefaView ? (
@@ -1952,46 +2324,6 @@ export function PosApp({ initialData }: PosAppProps) {
                 </div>
               ))}
             </div>
-          </div>
-        </section>
-      ) : null}
-
-      {isJefaView ? (
-        <section className="panel p-4 sm:p-5">
-          <div className="flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={() => setJefaSection("ventas")}
-              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                jefaSection === "ventas"
-                  ? "bg-ink text-white"
-                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
-              }`}
-            >
-              Ventas
-            </button>
-            <button
-              type="button"
-              onClick={() => setJefaSection("productos")}
-              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                jefaSection === "productos"
-                  ? "bg-ink text-white"
-                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
-              }`}
-            >
-              Productos
-            </button>
-            <button
-              type="button"
-              onClick={() => setJefaSection("clientes")}
-              className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-                jefaSection === "clientes"
-                  ? "bg-ink text-white"
-                  : "bg-white text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
-              }`}
-            >
-              Clientes
-            </button>
           </div>
         </section>
       ) : null}
@@ -2566,7 +2898,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   onClick={() => setJefaClientSection("lista")}
                   className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                     jefaClientSection === "lista"
-                      ? "bg-[var(--accent)] text-ink"
+                      ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                       : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                   }`}
                 >
@@ -2577,7 +2909,7 @@ export function PosApp({ initialData }: PosAppProps) {
                   onClick={() => setJefaClientSection("consumo")}
                   className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                     jefaClientSection === "consumo"
-                      ? "bg-[var(--accent)] text-ink"
+                      ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                       : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                   }`}
                 >
@@ -4000,7 +4332,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setJefaProductSection("catalogo")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       jefaProductSection === "catalogo"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4011,7 +4343,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setJefaProductSection("stock")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       jefaProductSection === "stock"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4022,7 +4354,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setJefaProductSection("vendidos")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       jefaProductSection === "vendidos"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4062,11 +4394,50 @@ export function PosApp({ initialData }: PosAppProps) {
                       </div>
                     </div>
 
+                    <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
+                      <label className="grid gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                          Buscar producto
+                        </span>
+                        <div className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-white px-4 py-3">
+                          <Search className="h-4 w-4 subtle" />
+                          <input
+                            type="text"
+                            value={stockSearchQuery}
+                            onChange={(event) => setStockSearchQuery(event.target.value)}
+                            placeholder="Ej. Aguila"
+                            className="w-full bg-transparent text-sm outline-none"
+                          />
+                        </div>
+                      </label>
+
+                      <label className="grid gap-2">
+                        <span className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                          Estado
+                        </span>
+                        <select
+                          value={stockStatusFilter}
+                          onChange={(event) =>
+                            setStockStatusFilter(
+                              event.target.value as "all" | "available" | "low" | "out"
+                            )
+                          }
+                          className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                        >
+                          <option value="all">Todos</option>
+                          <option value="available">Disponible</option>
+                          <option value="low">Stock bajo</option>
+                          <option value="out">Sin stock</option>
+                        </select>
+                      </label>
+                    </div>
+
                     <div className="mt-4 grid gap-3">
-                      {stockTrackedProducts.length ? (
-                        stockTrackedProducts.map((product) => {
+                      {filteredStockTrackedProducts.length ? (
+                        filteredStockTrackedProducts.map((product) => {
                           const outOfStock = isProductOutOfStock(product);
                           const lowStock = isProductLowStock(product);
+                          const latestMovement = latestStockMovementByProduct.get(product.id);
                           const statusLabel = outOfStock
                             ? "Sin stock"
                             : lowStock
@@ -4129,12 +4500,76 @@ export function PosApp({ initialData }: PosAppProps) {
                                   <p className="mt-1 text-lg font-semibold">{statusLabel}</p>
                                 </div>
                               </div>
+
+                              <div className="mt-4 rounded-2xl bg-[var(--surface)] px-4 py-3 ring-1 ring-[var(--border)]">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <div>
+                                    <p className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                                      Último movimiento
+                                    </p>
+                                    {latestMovement ? (
+                                      <div className="mt-2 space-y-1 text-sm">
+                                        <p className="font-semibold">
+                                          {getStockMovementTitle(latestMovement)}
+                                        </p>
+                                        <p className="text-xs font-semibold uppercase tracking-[0.14em] subtle">
+                                          {getStockMovementLabel(latestMovement)}
+                                        </p>
+                                        <p className="subtle">
+                                          {formatStockMovementDateTime(latestMovement.createdAt)} ·{" "}
+                                          {latestMovement.createdByLabel}
+                                        </p>
+                                        {latestMovement.reason ? (
+                                          <p className="subtle">
+                                            Motivo: {latestMovement.reason}
+                                          </p>
+                                        ) : null}
+                                        {latestMovement.note ? (
+                                          <p className="subtle">Nota: {latestMovement.note}</p>
+                                        ) : null}
+                                      </div>
+                                    ) : isLoadingStockMovements ? (
+                                      <p className="mt-2 text-sm subtle">
+                                        Cargando historial de movimientos...
+                                      </p>
+                                    ) : (
+                                      <p className="mt-2 text-sm subtle">
+                                        Sin movimientos registrados todavía.
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  <div className="flex flex-wrap gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => startRestockProduct(product)}
+                                      className="rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95"
+                                    >
+                                      Registrar ingreso
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => startAdjustmentProduct(product)}
+                                      className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-700 ring-1 ring-rose-200 transition hover:bg-rose-100"
+                                    >
+                                      Ajustar stock
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openProductHistory(product)}
+                                      className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                                    >
+                                      Ver historial
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
                             </div>
                           );
                         })
                       ) : (
                         <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
-                          No hay productos activos con control de stock.
+                          No hay productos con stock que coincidan con ese filtro.
                         </div>
                       )}
                     </div>
@@ -4256,7 +4691,7 @@ export function PosApp({ initialData }: PosAppProps) {
                             }}
                             className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                               isActive
-                                ? "bg-ink text-white"
+                                ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                 : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
                             }`}
                           >
@@ -4278,7 +4713,7 @@ export function PosApp({ initialData }: PosAppProps) {
                               onClick={() => setSelectedBeverageSubcategory(subcategory)}
                               className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                                 isActive
-                                  ? "bg-[var(--accent)] text-ink"
+                                  ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                   : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
                               }`}
                             >
@@ -4303,7 +4738,7 @@ export function PosApp({ initialData }: PosAppProps) {
                                 onClick={() => setSelectedAlcoholType(type)}
                                 className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
                                   isActive
-                                    ? "bg-ink text-white"
+                                    ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                     : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
                                 }`}
                               >
@@ -4321,7 +4756,7 @@ export function PosApp({ initialData }: PosAppProps) {
                               onClick={() => setSelectedAlcoholPresentation("all")}
                               className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                                 selectedAlcoholPresentation === "all"
-                                  ? "bg-[var(--accent)] text-ink"
+                                  ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                   : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
                               }`}
                             >
@@ -4338,7 +4773,7 @@ export function PosApp({ initialData }: PosAppProps) {
                                   onClick={() => setSelectedAlcoholPresentation(presentation)}
                                   className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                                     isActive
-                                      ? "bg-[var(--accent)] text-ink"
+                                      ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                                       : "bg-[var(--surface)] text-[var(--foreground)] ring-1 ring-[var(--border)] hover:ring-[var(--accent)]"
                                   }`}
                                 >
@@ -4486,6 +4921,320 @@ export function PosApp({ initialData }: PosAppProps) {
             </section>
           ) : null}
 
+          {restockProduct ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-black/35 sm:items-center sm:justify-center">
+              <div className="w-full rounded-t-[2rem] bg-white p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold">Registrar ingreso de stock</p>
+                    <p className="mt-1 text-sm subtle">
+                      Suma unidades a {restockProduct.name} y deja registro del ingreso.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRestockProduct(null)}
+                    className="inline-flex items-center justify-center rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mt-5 grid gap-4">
+                  <div className="rounded-2xl bg-[var(--surface)] px-4 py-3 ring-1 ring-[var(--border)]">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                      Stock actual
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold">
+                      {restockProduct.stockQuantity ?? 0}
+                    </p>
+                  </div>
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Cantidad agregada</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={restockQuantity}
+                      onChange={(event) => setRestockQuantity(event.target.value)}
+                      placeholder="Ej. 24"
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Nota (opcional)</span>
+                    <textarea
+                      value={restockNote}
+                      onChange={(event) => setRestockNote(event.target.value)}
+                      placeholder="Ej. Llegó pedido de bebidas"
+                      rows={3}
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setRestockProduct(null)}
+                    className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveStockRestock}
+                    disabled={isSavingRestock}
+                    className="rounded-2xl bg-ink px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {isSavingRestock ? "Guardando..." : "Guardar ingreso"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {adjustmentProduct ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-black/35 sm:items-center sm:justify-center">
+              <div className="w-full rounded-t-[2rem] bg-white p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold">Ajustar stock</p>
+                    <p className="mt-1 text-sm subtle">
+                      Descuenta unidades de {adjustmentProduct.name} y deja registro del motivo.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAdjustmentProduct(null)}
+                    className="inline-flex items-center justify-center rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mt-5 grid gap-4">
+                  <div className="rounded-2xl bg-[var(--surface)] px-4 py-3 ring-1 ring-[var(--border)]">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] subtle">
+                      Stock actual
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold">
+                      {adjustmentProduct.stockQuantity ?? 0}
+                    </p>
+                  </div>
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Cantidad a descontar</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      max={Math.max(adjustmentProduct.stockQuantity ?? 0, 1)}
+                      value={adjustmentQuantity}
+                      onChange={(event) => setAdjustmentQuantity(event.target.value)}
+                      placeholder="Ej. 2"
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Motivo</span>
+                    <select
+                      value={adjustmentReason}
+                      onChange={(event) =>
+                        setAdjustmentReason(event.target.value as StockAdjustmentReason)
+                      }
+                      className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    >
+                      {stockAdjustmentReasonOptions.map((reasonOption) => (
+                        <option key={reasonOption} value={reasonOption}>
+                          {reasonOption}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-sm font-medium">Nota (opcional)</span>
+                    <textarea
+                      value={adjustmentNote}
+                      onChange={(event) => setAdjustmentNote(event.target.value)}
+                      placeholder="Ej. Producto vencido o conteo corregido"
+                      rows={3}
+                      className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setAdjustmentProduct(null)}
+                    className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveStockAdjustment}
+                    disabled={isSavingAdjustment}
+                    className="rounded-2xl bg-rose-600 px-4 py-3 text-sm font-semibold text-white transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {isSavingAdjustment ? "Guardando..." : "Guardar ajuste"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {historyProduct ? (
+            <div className="fixed inset-0 z-50 flex items-end bg-black/35 sm:items-center sm:justify-center">
+              <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-2xl sm:rounded-[2rem] sm:p-6">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold">Historial de movimientos</p>
+                    <p className="mt-1 text-sm subtle">
+                      Revisa ingresos y ajustes registrados para {historyProduct.name}.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setHistoryProduct(null)}
+                    className="inline-flex items-center justify-center rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm font-semibold ring-1 ring-[var(--border)] transition hover:ring-[var(--accent)]"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="mt-5 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryPeriod("week")}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                        stockHistoryPeriod === "week"
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                      }`}
+                    >
+                      Semana
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryPeriod("month")}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                        stockHistoryPeriod === "month"
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                      }`}
+                    >
+                      Mes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryPeriod("year")}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                        stockHistoryPeriod === "year"
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                      }`}
+                    >
+                      Año
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryPeriod("all")}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                        stockHistoryPeriod === "all"
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                      }`}
+                    >
+                      Todo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setStockHistoryPeriod("custom")}
+                      className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
+                        stockHistoryPeriod === "custom"
+                          ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
+                          : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
+                      }`}
+                    >
+                      Rango
+                    </button>
+                  </div>
+
+                  {stockHistoryPeriod === "custom" ? (
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        type="date"
+                        value={stockHistoryStartDate}
+                        onChange={(event) => setStockHistoryStartDate(event.target.value)}
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      />
+                      <input
+                        type="date"
+                        value={stockHistoryEndDate}
+                        onChange={(event) => setStockHistoryEndDate(event.target.value)}
+                        className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                      />
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-2xl bg-[var(--surface)] px-4 py-3 ring-1 ring-[var(--border)]">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.16em] subtle">
+                      Mostrando
+                    </p>
+                    <p className="mt-1 text-lg font-semibold">
+                      {Math.min(visibleSelectedProductHistory.length, 10)} de{" "}
+                      {filteredSelectedProductHistory.length} movimientos
+                    </p>
+                    <p className="mt-1 text-sm subtle">
+                      Se muestran los 10 movimientos más recientes del periodo seleccionado.
+                    </p>
+                  </div>
+
+                  {visibleSelectedProductHistory.length ? (
+                    visibleSelectedProductHistory.map((movement) => (
+                      <div
+                        key={movement.id}
+                        className="rounded-2xl bg-[var(--surface)] px-4 py-3 text-sm ring-1 ring-[var(--border)]"
+                      >
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="font-semibold">
+                              {getStockMovementTitle(movement)}
+                            </p>
+                            <p className="mt-1 text-xs font-semibold uppercase tracking-[0.14em] subtle">
+                              {getStockMovementLabel(movement)}
+                            </p>
+                            <p className="mt-1 subtle">
+                              {movement.createdByLabel} ·{" "}
+                              {formatStockMovementDateTime(movement.createdAt)}
+                            </p>
+                            {movement.reason ? (
+                              <p className="mt-1 subtle">Motivo: {movement.reason}</p>
+                            ) : null}
+                            {movement.note ? (
+                              <p className="mt-1 subtle">Nota: {movement.note}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-3xl border border-dashed border-[var(--border)] px-4 py-8 text-center text-sm subtle">
+                      No hay movimientos registrados para este producto en ese periodo.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {historyModalView ? (
             <div className="fixed inset-0 z-50 flex items-end bg-[var(--background)] sm:items-center sm:justify-center">
               <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-[2rem] bg-[var(--surface)] p-5 shadow-2xl ring-1 ring-black/5 sm:max-w-4xl sm:rounded-[2rem] sm:p-6">
@@ -4515,7 +5264,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setHistoryModalPeriod("today")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       historyModalPeriod === "today"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4526,7 +5275,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setHistoryModalPeriod("week")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       historyModalPeriod === "week"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4537,7 +5286,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setHistoryModalPeriod("month")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       historyModalPeriod === "month"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4548,7 +5297,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setHistoryModalPeriod("year")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       historyModalPeriod === "year"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4559,7 +5308,7 @@ export function PosApp({ initialData }: PosAppProps) {
                     onClick={() => setHistoryModalPeriod("custom")}
                     className={`rounded-full px-3 py-2 text-xs font-semibold transition ${
                       historyModalPeriod === "custom"
-                        ? "bg-[var(--accent)] text-ink"
+                        ? "bg-emerald-100 text-emerald-800 ring-1 ring-emerald-200"
                         : "bg-[var(--accent-soft)] text-[var(--foreground)] ring-1 ring-transparent hover:ring-[var(--accent)]"
                     }`}
                   >
@@ -4816,20 +5565,38 @@ export function PosApp({ initialData }: PosAppProps) {
 
                     {productForm.trackStock ? (
                       <div className="grid gap-4 sm:grid-cols-2">
-                        <label className="grid gap-2">
-                          <span className="text-sm font-medium">Cantidad actual</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="1"
-                            value={productForm.stockQuantity}
-                            onChange={(event) =>
-                              updateProductForm("stockQuantity", event.target.value)
-                            }
-                            placeholder="0"
-                            className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
-                          />
-                        </label>
+                        {editingProductId ? (
+                          <div className="grid gap-2">
+                            <span className="text-sm font-medium">Stock actual</span>
+                            <div className="rounded-2xl border border-[var(--border)] bg-slate-50 px-4 py-3 text-sm">
+                              <p className="font-semibold">
+                                {productForm.stockQuantity.trim().length
+                                  ? productForm.stockQuantity
+                                  : "0"}{" "}
+                                unidades
+                              </p>
+                              <p className="mt-1 subtle">
+                                Usa `Niveles de stock` para registrar ingresos, ajustes y
+                                mantener el historial.
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <label className="grid gap-2">
+                            <span className="text-sm font-medium">Stock inicial</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={productForm.stockQuantity}
+                              onChange={(event) =>
+                                updateProductForm("stockQuantity", event.target.value)
+                              }
+                              placeholder="0"
+                              className="rounded-2xl border border-[var(--border)] px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
+                            />
+                          </label>
+                        )}
 
                         <label className="grid gap-2">
                           <span className="text-sm font-medium">Stock mínimo</span>

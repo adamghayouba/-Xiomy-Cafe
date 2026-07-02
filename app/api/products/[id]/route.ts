@@ -33,10 +33,6 @@ export async function PATCH(
   const image = String(body.image ?? "").trim();
   const active = body.active !== false;
   const trackStock = body.trackStock === true;
-  const stockQuantity =
-    body.stockQuantity === "" || body.stockQuantity === null || typeof body.stockQuantity === "undefined"
-      ? null
-      : Number(body.stockQuantity);
   const lowStockThreshold =
     body.lowStockThreshold === "" ||
     body.lowStockThreshold === null ||
@@ -53,10 +49,6 @@ export async function PATCH(
   }
 
   if (trackStock) {
-    if (stockQuantity === null || Number.isNaN(stockQuantity) || stockQuantity < 0) {
-      return NextResponse.json({ error: "La cantidad actual de stock no es válida." }, { status: 400 });
-    }
-
     if (
       lowStockThreshold !== null &&
       (Number.isNaN(lowStockThreshold) || lowStockThreshold < 0)
@@ -69,6 +61,26 @@ export async function PATCH(
     return NextResponse.json({ error: "Subcategoría inválida." }, { status: 400 });
   }
 
+  const { data: existingProduct, error: existingProductError } = await context.supabase
+    .from("products")
+    .select("stock_quantity, track_stock")
+    .eq("id", id)
+    .is("archived_at", null)
+    .single();
+
+  if (existingProductError || !existingProduct) {
+    return NextResponse.json(
+      { error: existingProductError?.message ?? "No fue posible cargar el producto actual." },
+      { status: 400 }
+    );
+  }
+
+  const nextStockQuantity = trackStock
+    ? existingProduct.track_stock
+      ? existingProduct.stock_quantity
+      : coalesceToZero(existingProduct.stock_quantity)
+    : null;
+
   const { data, error } = await context.supabase
     .from("products")
     .update({
@@ -80,7 +92,7 @@ export async function PATCH(
       image,
       active,
       track_stock: trackStock,
-      stock_quantity: trackStock ? stockQuantity : null,
+      stock_quantity: nextStockQuantity,
       low_stock_threshold: trackStock ? lowStockThreshold : null
     })
     .eq("id", id)
@@ -98,6 +110,12 @@ export async function PATCH(
   return NextResponse.json({
     product: mapProductRecord(data as Record<string, unknown>)
   });
+}
+
+function coalesceToZero(value: unknown) {
+  const nextValue = Number(value ?? 0);
+
+  return Number.isFinite(nextValue) && nextValue >= 0 ? nextValue : 0;
 }
 
 export async function DELETE(

@@ -28,6 +28,8 @@ import type {
   SalesReportPeriod,
   SalesTopClient,
   SalesTopProduct,
+  StockMovementRecord,
+  StockMovementType,
   SaleCancellationRequest,
   SaleCancellationRequestStatus,
   SaleStatus,
@@ -411,6 +413,23 @@ export function mapCashWithdrawalRecord(record: Record<string, unknown>): CashWi
     scope,
     note: record.note ? String(record.note) : null,
     createdByLabel: String(record.created_by_label ?? "Caja"),
+    createdAt: String(record.created_at ?? "")
+  };
+}
+
+export function mapStockMovementRecord(record: Record<string, unknown>): StockMovementRecord {
+  const movementTypeValue = String(record.movement_type ?? "restock");
+  const movementType: StockMovementType =
+    movementTypeValue === "adjustment_out" ? "adjustment_out" : "restock";
+
+  return {
+    id: String(record.id ?? ""),
+    productId: String(record.product_id ?? ""),
+    movementType,
+    quantity: Number(record.quantity ?? 0),
+    reason: record.reason ? (String(record.reason) as StockMovementRecord["reason"]) : null,
+    note: record.note ? String(record.note) : null,
+    createdByLabel: String(record.created_by_label ?? "Jefa"),
     createdAt: String(record.created_at ?? "")
   };
 }

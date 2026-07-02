@@ -174,6 +174,18 @@ create table if not exists public.cash_withdrawals (
   created_at timestamptz not null default timezone('utc', now())
 );
 
+create table if not exists public.stock_movements (
+  id uuid primary key default gen_random_uuid(),
+  product_id uuid not null references public.products(id) on delete cascade,
+  movement_type text not null default 'restock' check (movement_type in ('restock', 'adjustment_out')),
+  quantity integer not null check (quantity > 0),
+  reason text,
+  note text,
+  created_by_user_id uuid not null references auth.users(id) on delete restrict,
+  created_by_label text not null,
+  created_at timestamptz not null default timezone('utc', now())
+);
+
 alter table public.client_payments add column if not exists paid_by_name text;
 alter table public.cash_withdrawals add column if not exists scope text not null default 'shift';
 alter table public.cash_withdrawals drop constraint if exists cash_withdrawals_scope_check;
@@ -190,6 +202,11 @@ alter table public.products add column if not exists stock_quantity integer;
 alter table public.products add column if not exists low_stock_threshold integer;
 alter table public.products add column if not exists archived_at timestamptz;
 alter table public.products add column if not exists updated_at timestamptz not null default timezone('utc', now());
+alter table public.stock_movements add column if not exists reason text;
+alter table public.stock_movements drop constraint if exists stock_movements_movement_type_check;
+alter table public.stock_movements
+  add constraint stock_movements_movement_type_check
+  check (movement_type in ('restock', 'adjustment_out'));
 
 alter table public.products drop constraint if exists products_price_check;
 alter table public.products
@@ -259,6 +276,7 @@ create index if not exists idx_sale_cancellation_requests_status on public.sale_
 create unique index if not exists idx_sale_cancellation_requests_pending_unique on public.sale_cancellation_requests(sale_id) where status = 'pending';
 create index if not exists idx_cash_closeouts_cashier_date on public.cash_closeouts(cashier_user_id, business_date desc);
 create index if not exists idx_cash_withdrawals_creator_date on public.cash_withdrawals(created_by_user_id, business_date desc);
+create index if not exists idx_stock_movements_product_created on public.stock_movements(product_id, created_at desc);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -331,6 +349,7 @@ alter table public.client_payments enable row level security;
 alter table public.sale_cancellation_requests enable row level security;
 alter table public.cash_closeouts enable row level security;
 alter table public.cash_withdrawals enable row level security;
+alter table public.stock_movements enable row level security;
 
 drop policy if exists "profiles_self_select" on public.profiles;
 create policy "profiles_self_select"
@@ -562,6 +581,23 @@ for insert
 to authenticated
 with check (
   public.current_user_role() in ('jefa', 'cajero')
+  and created_by_user_id = auth.uid()
+);
+
+drop policy if exists "stock_movements_select_for_jefa" on public.stock_movements;
+create policy "stock_movements_select_for_jefa"
+on public.stock_movements
+for select
+to authenticated
+using (public.current_user_role() = 'jefa');
+
+drop policy if exists "stock_movements_insert_for_jefa" on public.stock_movements;
+create policy "stock_movements_insert_for_jefa"
+on public.stock_movements
+for insert
+to authenticated
+with check (
+  public.current_user_role() = 'jefa'
   and created_by_user_id = auth.uid()
 );
 
@@ -1379,6 +1415,200 @@ $$;
 
 grant execute on function public.create_cash_withdrawal(numeric, text, text) to authenticated;
 
+drop function if exists public.record_stock_adjustment(uuid, integer, text, text);
+drop function if exists public.record_stock_restock(uuid, integer, text);
+
+create or replace function public.record_stock_restock(
+  p_product_id uuid,
+  p_quantity integer,
+  p_note text default null
+)
+returns public.stock_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role public.pos_role;
+  v_profile public.profiles%rowtype;
+  v_product public.products%rowtype;
+  v_movement public.stock_movements%rowtype;
+  v_label text;
+begin
+  if v_user_id is null then
+    raise exception 'No authenticated user for stock restock.';
+  end if;
+
+  select * into v_profile
+  from public.profiles
+  where id = v_user_id;
+
+  v_role := v_profile.role;
+
+  if v_role <> 'jefa' then
+    raise exception 'Solo jefa puede registrar ingresos de stock.';
+  end if;
+
+  if p_quantity is null or p_quantity <= 0 then
+    raise exception 'La cantidad del ingreso debe ser mayor a cero.';
+  end if;
+
+  select *
+  into v_product
+  from public.products
+  where id = p_product_id
+    and archived_at is null;
+
+  if not found then
+    raise exception 'El producto no existe o ya no está disponible.';
+  end if;
+
+  if not coalesce(v_product.track_stock, false) then
+    raise exception 'Este producto no usa control de stock.';
+  end if;
+
+  v_label := coalesce(
+    nullif(trim(coalesce(v_profile.full_name, '')), ''),
+    nullif(trim(coalesce(v_profile.email, '')), ''),
+    'Jefa'
+  );
+
+  update public.products
+  set
+    stock_quantity = coalesce(stock_quantity, 0) + p_quantity,
+    updated_at = timezone('utc', now())
+  where id = v_product.id;
+
+  insert into public.stock_movements (
+    product_id,
+    movement_type,
+    quantity,
+    note,
+    created_by_user_id,
+    created_by_label
+  )
+  values (
+    v_product.id,
+    'restock',
+    p_quantity,
+    nullif(trim(coalesce(p_note, '')), ''),
+    v_user_id,
+    v_label
+  )
+  returning * into v_movement;
+
+  return v_movement;
+end;
+$$;
+
+grant execute on function public.record_stock_restock(uuid, integer, text) to authenticated;
+
+create or replace function public.record_stock_adjustment(
+  p_product_id uuid,
+  p_quantity integer,
+  p_reason text,
+  p_note text default null
+)
+returns public.stock_movements
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_role public.pos_role;
+  v_profile public.profiles%rowtype;
+  v_product public.products%rowtype;
+  v_movement public.stock_movements%rowtype;
+  v_label text;
+  v_reason text := nullif(trim(coalesce(p_reason, '')), '');
+  v_available_stock integer;
+begin
+  if v_user_id is null then
+    raise exception 'No authenticated user for stock adjustment.';
+  end if;
+
+  select * into v_profile
+  from public.profiles
+  where id = v_user_id;
+
+  v_role := v_profile.role;
+
+  if v_role <> 'jefa' then
+    raise exception 'Solo jefa puede ajustar stock.';
+  end if;
+
+  if p_quantity is null or p_quantity <= 0 then
+    raise exception 'La cantidad del ajuste debe ser mayor a cero.';
+  end if;
+
+  if v_reason is null then
+    raise exception 'Debes indicar el motivo del ajuste.';
+  end if;
+
+  if v_reason not in ('Vencido', 'Error de conteo', 'Pérdida', 'Otro') then
+    raise exception 'Motivo de ajuste no válido.';
+  end if;
+
+  select *
+  into v_product
+  from public.products
+  where id = p_product_id
+    and archived_at is null;
+
+  if not found then
+    raise exception 'El producto no existe o ya no está disponible.';
+  end if;
+
+  if not coalesce(v_product.track_stock, false) then
+    raise exception 'Este producto no usa control de stock.';
+  end if;
+
+  v_available_stock := coalesce(v_product.stock_quantity, 0);
+
+  if v_available_stock < p_quantity then
+    raise exception 'No hay suficiente stock disponible para ese ajuste.';
+  end if;
+
+  v_label := coalesce(
+    nullif(trim(coalesce(v_profile.full_name, '')), ''),
+    nullif(trim(coalesce(v_profile.email, '')), ''),
+    'Jefa'
+  );
+
+  update public.products
+  set
+    stock_quantity = greatest(coalesce(stock_quantity, 0) - p_quantity, 0),
+    updated_at = timezone('utc', now())
+  where id = v_product.id;
+
+  insert into public.stock_movements (
+    product_id,
+    movement_type,
+    quantity,
+    reason,
+    note,
+    created_by_user_id,
+    created_by_label
+  )
+  values (
+    v_product.id,
+    'adjustment_out',
+    p_quantity,
+    v_reason,
+    nullif(trim(coalesce(p_note, '')), ''),
+    v_user_id,
+    v_label
+  )
+  returning * into v_movement;
+
+  return v_movement;
+end;
+$$;
+
+grant execute on function public.record_stock_adjustment(uuid, integer, text, text) to authenticated;
+
 drop function if exists public.acknowledge_cash_closeout(uuid);
 
 create or replace function public.acknowledge_cash_closeout(
@@ -1491,12 +1721,12 @@ with source_products (name, category, subcategory, price, cost, description, ima
     ('Cocacola mini', 'Bebidas', 'Frías', 2500, 1500, 'Gaseosa Coca-Cola mini.', '🥤', true, true, 0),
     ('Postobon Mini', 'Bebidas', 'Frías', 2500, 1142, 'Gaseosa Postobón mini.', '🥤', true, true, 0),
     ('Saviloe 320ml', 'Bebidas', 'Frías', 3500, 2030, 'Bebida Saviloe 320ml.', '🧃', true, true, 0),
-    ('Hydralite 640ml', 'Bebidas', 'Frías', 5500, 3400, 'Bebida Hydralite 640ml.', '🧃', true, true, 0),
+    ('Hydralite 640ml', 'Bebidas', 'Frías', 5500, 3400, 'Bebida Hydralite 640ml.', '💧', true, true, 0),
     ('Bretaña', 'Bebidas', 'Frías', 3000, 1917, 'Bebida Bretaña.', '🥤', true, true, 0),
     ('Malta', 'Bebidas', 'Frías', 3500, 2070, 'Bebida malta.', '🥤', true, true, 0),
     ('Poni Malta', 'Bebidas', 'Frías', 2000, 1100, 'Poni Malta individual.', '🥤', true, true, 0),
     ('Vaso Michelada', 'Bebidas', 'Alcohol', 2000, 0, 'Preparación de michelada en vaso.', '🍺', true, true, 0),
-    ('Tutti Frutti', 'Bebidas', 'Frías', 3000, 1666, 'Bebida Tutti Frutti.', '🧃', true, true, 0),
+    ('Tutti Frutti', 'Bebidas', 'Frías', 3000, 1666, 'Bebida Tutti Frutti.', '🍹', true, true, 0),
     ('Gaseosa Postobon', 'Bebidas', 'Frías', 3500, 1666, 'Gaseosa Postobón.', '🥤', true, true, 0),
     ('Almuerzo Completo', 'Almuerzos', null, 15000, 0, 'Servicio completo del almuerzo del día.', '🍽️', true, false, null),
     ('Almuerzo Economico', 'Almuerzos', null, 12000, 0, 'Opción económica del almuerzo del día.', '🥘', true, false, null),
@@ -1511,8 +1741,8 @@ with source_products (name, category, subcategory, price, cost, description, ima
     ('Porción Torta Zanahoria', 'Comidas', null, 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🍰', true, true, 0),
     ('Litro Aguardiente Verde', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
     ('Botella Aguardiente', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
-    ('Bailys 700ml', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
-    ('Jose Cuervo 375ml', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
+    ('Bailys 700ml', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🍾', true, true, 0),
+    ('Jose Cuervo 375ml', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🍾', true, true, 0),
     ('1/2 Aguardiente Azul', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
     ('1/2 Aguardiente Rojo', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
     ('1/2 Aguardiente Verde', 'Bebidas', 'Alcohol', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥃', true, true, 0),
@@ -1533,7 +1763,7 @@ with source_products (name, category, subcategory, price, cost, description, ima
     ('Aromatica', 'Bebidas', 'Calientes', 1000, 0, 'Aromática caliente.', '🍵', true, true, 0),
     ('Aromatica Leche', 'Bebidas', 'Calientes', 2000, 0, 'Aromática con leche.', '🍵', true, true, 0),
     ('Café con leche', 'Bebidas', 'Calientes', 2300, 0, 'Café con leche caliente.', '☕', true, false, null),
-    ('Milo', 'Bebidas', 'Calientes', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🥛', true, false, null)
+    ('Milo', 'Bebidas', 'Calientes', 0, 0, 'Producto cargado desde la lista real; falta completar el precio de venta.', '🍫', true, false, null)
 ),
 updated_products as (
   update public.products as product

@@ -215,7 +215,7 @@ export const products: Product[] = [
     price: 3500,
     description: "Bebida Saviloe 320ml.",
     cost: 2030,
-    image: "🧃",
+    image: "💧",
     ...trackedDefaults
   },
   {
@@ -226,7 +226,7 @@ export const products: Product[] = [
     price: 5500,
     description: "Bebida Hydralite 640ml.",
     cost: 3400,
-    image: "🧃",
+    image: "🍹",
     ...trackedDefaults
   },
   {
@@ -383,7 +383,7 @@ export const products: Product[] = [
     price: 0,
     description: pendingPriceDescription,
     cost: 0,
-    image: "🥃",
+    image: "🍾",
     ...trackedDefaults
   },
   {
@@ -394,7 +394,7 @@ export const products: Product[] = [
     price: 0,
     description: pendingPriceDescription,
     cost: 0,
-    image: "🥃",
+    image: "🍾",
     ...trackedDefaults
   },
   {
@@ -647,7 +647,7 @@ export const products: Product[] = [
     price: 0,
     description: pendingPriceDescription,
     cost: 0,
-    image: "🥛",
+    image: "🍫",
     ...untrackedDefaults
   },
   ...lunchProducts
