@@ -2656,6 +2656,16 @@ export function PosApp({ initialData }: PosAppProps) {
 
               {salesReport ? (
                 <>
+                  {(() => {
+                    const cashCollected =
+                      salesReport.paymentBreakdown.find(
+                        (entry) => entry.method === "Efectivo"
+                      )?.total ?? 0;
+                    const netCashInBox =
+                      cashCollected - salesReport.cashWithdrawalsTotal;
+
+                    return (
+                      <>
                   <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                     <MetricTile label="Ventas totales" value={formatCop(salesReport.grossSales)} />
                     <MetricTile label="Cobrado" value={formatCop(salesReport.netCollected)} />
@@ -2671,7 +2681,18 @@ export function PosApp({ initialData }: PosAppProps) {
                     <MetricTile label="Descuentos" value={formatCop(salesReport.discountTotal)} />
                     <MetricTile label="Número de transacciones" value={`${salesReport.transactionsCount}`} />
                     <MetricTile label="Productos vendidos" value={`${salesReport.productsSoldCount}`} />
+                    <div className="rounded-3xl bg-emerald-50 p-5 ring-1 ring-emerald-200">
+                      <p className="text-sm font-semibold text-emerald-700">
+                        Efectivo neto en caja
+                      </p>
+                      <p className="mt-2 text-3xl font-semibold text-emerald-800">
+                        {formatCop(netCashInBox)}
+                      </p>
+                    </div>
                   </div>
+                      </>
+                    );
+                  })()}
 
                   {pendingCancellationCount ? (
                     <div className="mt-6 rounded-3xl bg-white p-5 ring-1 ring-[var(--border)]">
@@ -3746,6 +3767,22 @@ export function PosApp({ initialData }: PosAppProps) {
                             className="rounded-2xl border border-[var(--border)] bg-white px-4 py-3 text-sm outline-none transition focus:border-[var(--accent)]"
                           />
                         </label>
+                      </div>
+                    ) : null}
+
+                    {closeoutEntryPoint === "cierre" &&
+                    closeoutSnapshot &&
+                    closeoutDifference !== null ? (
+                      <div className="rounded-[2rem] bg-[var(--accent-soft)] px-5 py-5 ring-1 ring-[var(--accent)]">
+                        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-700">
+                          Efectivo esperado
+                        </p>
+                        <p className="mt-3 text-4xl font-semibold text-ink sm:text-5xl">
+                          {formatCop(closeoutSnapshot.expectedCash)}
+                        </p>
+                        <p className="mt-2 text-sm text-slate-700">
+                          Este es el número principal que la cajera debe comparar contra el efectivo contado antes de confirmar el cierre.
+                        </p>
                       </div>
                     ) : null}
 
