@@ -2681,14 +2681,16 @@ export function PosApp({ initialData }: PosAppProps) {
                     <MetricTile label="Descuentos" value={formatCop(salesReport.discountTotal)} />
                     <MetricTile label="Número de transacciones" value={`${salesReport.transactionsCount}`} />
                     <MetricTile label="Productos vendidos" value={`${salesReport.productsSoldCount}`} />
-                    <div className="rounded-3xl bg-emerald-50 p-5 ring-1 ring-emerald-200">
-                      <p className="text-sm font-semibold text-emerald-700">
-                        Efectivo neto en caja
-                      </p>
-                      <p className="mt-2 text-3xl font-semibold text-emerald-800">
-                        {formatCop(netCashInBox)}
-                      </p>
-                    </div>
+                    {salesReportPeriod === "day" ? (
+                      <div className="rounded-3xl bg-emerald-50 p-5 ring-1 ring-emerald-200">
+                        <p className="text-sm font-semibold text-emerald-700">
+                          Efectivo neto en caja
+                        </p>
+                        <p className="mt-2 text-3xl font-semibold text-emerald-800">
+                          {formatCop(netCashInBox)}
+                        </p>
+                      </div>
+                    ) : null}
                   </div>
                       </>
                     );
